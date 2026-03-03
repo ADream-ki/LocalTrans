@@ -1,0 +1,27 @@
+# Windows EXE 打包环境 - 使用 Wine
+FROM scottyhardy/docker-wine:latest
+
+WORKDIR /build
+
+# 安装 Python for Windows
+RUN wget -q https://www.python.org/ftp/python/3.11.7/python-3.11.7-amd64.exe && \
+    wine python-3.11.7-amd64.exe /quiet InstallAllUsers=1 PrependPath=1 && \
+    rm python-3.11.7-amd64.exe
+
+# 设置 Python 路径
+ENV WINEPATH="C:\\Python311;C:\\Python311\\Scripts"
+
+# 复制项目
+COPY pyproject.toml .
+COPY src/ ./src/
+COPY pytest.ini .
+COPY localtrans.spec .
+
+# 安装依赖并打包
+RUN wine pip install --quiet pyinstaller pydantic pydantic-settings loguru rich numpy && \
+    wine pyinstaller localtrans.spec --noconfirm
+
+# 输出
+VOLUME /build/dist
+
+CMD ["ls", "-la", "dist/"]

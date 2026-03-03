@@ -1,0 +1,56 @@
+# Python bytecode/cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Build and packaging artifacts
+build/
+dist/
+*.egg-info/
+.eggs/
+pip-wheel-metadata/
+*.pyz
+*.pkg
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Python tooling caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.pytype/
+.hypothesis/
+.tox/
+.nox/
+.coverage
+.coverage.*
+htmlcov/
+
+# Logs and runtime traces
+*.log
+logs/
+run_smoke*.log
+
+# Local runtime data/models (do not commit)
+.localtrans/
+models/
+downloads/
+cache/
+tmp/
+temp/
+outputs/
+recordings/
+
+# IDE/editor
+.vscode/
+.idea/
+*.iml
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
