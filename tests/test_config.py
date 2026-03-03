@@ -30,15 +30,15 @@ class TestSettings:
         
         assert config.model_type == "vosk"
         assert config.model_size == "base"
-        assert config.vad_filter is True
+        assert config.vad_filter is False
     
     def test_mt_config(self):
         """测试MT配置"""
         config = MTConfig()
         
         assert config.model_type == "argos-ct2"
-        assert config.source_lang == "en"
-        assert config.target_lang == "zh"
+        assert config.source_lang == "zh"
+        assert config.target_lang == "en"
     
     def test_tts_config(self):
         """测试TTS配置"""

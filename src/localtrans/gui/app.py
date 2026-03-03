@@ -110,12 +110,12 @@ class MainWindow(QMainWindow):
 
         layout.addWidget(QLabel("源语言:"))
         self.source_lang_combo = QComboBox()
-        self._populate_language_combo(self.source_lang_combo, default_code="en")
+        self._populate_language_combo(self.source_lang_combo, default_code="zh")
         layout.addWidget(self.source_lang_combo)
 
         layout.addWidget(QLabel("目标语言:"))
         self.target_lang_combo = QComboBox()
-        self._populate_language_combo(self.target_lang_combo, default_code="zh")
+        self._populate_language_combo(self.target_lang_combo, default_code="en")
         layout.addWidget(self.target_lang_combo)
 
         self.tts_checkbox = QCheckBox("启用语音合成")
@@ -281,20 +281,20 @@ class MainWindow(QMainWindow):
         audio_form.addRow("输出路由", self.output_virtual_checkbox)
 
         self.asr_buffer_spin = QDoubleSpinBox()
-        self.asr_buffer_spin.setRange(0.5, 8.0)
+        self.asr_buffer_spin.setRange(0.3, 8.0)
         self.asr_buffer_spin.setSingleStep(0.1)
-        self.asr_buffer_spin.setValue(0.8)
+        self.asr_buffer_spin.setValue(0.6)
         audio_form.addRow("ASR缓冲时长(s)", self.asr_buffer_spin)
 
         self.asr_overlap_spin = QDoubleSpinBox()
         self.asr_overlap_spin.setRange(0.0, 2.0)
-        self.asr_overlap_spin.setSingleStep(0.1)
-        self.asr_overlap_spin.setValue(0.1)
+        self.asr_overlap_spin.setSingleStep(0.05)
+        self.asr_overlap_spin.setValue(0.05)
         audio_form.addRow("ASR重叠时长(s)", self.asr_overlap_spin)
 
         self.max_queue_spin = QSpinBox()
         self.max_queue_spin.setRange(1, 100)
-        self.max_queue_spin.setValue(4)
+        self.max_queue_spin.setValue(2)
         audio_form.addRow("最大翻译队列", self.max_queue_spin)
 
         layout.addWidget(audio_group)
@@ -564,6 +564,7 @@ class MainWindow(QMainWindow):
     def _collect_gui_config(self) -> dict:
         """采集当前界面配置"""
         return {
+            "config_version": 2,
             "source_lang": self.source_lang_combo.currentData(),
             "target_lang": self.target_lang_combo.currentData(),
             "enable_tts": self.tts_checkbox.isChecked(),
@@ -586,8 +587,10 @@ class MainWindow(QMainWindow):
 
     def _apply_gui_config(self, cfg: dict) -> None:
         """应用界面配置"""
-        self._set_combo_data(self.source_lang_combo, cfg.get("source_lang", "en"))
-        self._set_combo_data(self.target_lang_combo, cfg.get("target_lang", "zh"))
+        config_version = int(cfg.get("config_version", 1))
+
+        self._set_combo_data(self.source_lang_combo, cfg.get("source_lang", "zh"))
+        self._set_combo_data(self.target_lang_combo, cfg.get("target_lang", "en"))
         self.tts_checkbox.setChecked(bool(cfg.get("enable_tts", True)))
 
         self._set_combo_data(self.asr_backend_combo, cfg.get("asr_backend", settings.asr.model_type))
@@ -603,9 +606,24 @@ class MainWindow(QMainWindow):
 
         self._set_combo_data(self.input_device_combo, cfg.get("input_device_id"))
         self.output_virtual_checkbox.setChecked(bool(cfg.get("output_to_virtual_device", True)))
-        self.asr_buffer_spin.setValue(float(cfg.get("asr_buffer_duration", 1.5)))
-        self.asr_overlap_spin.setValue(float(cfg.get("asr_overlap", 0.3)))
-        self.max_queue_spin.setValue(int(cfg.get("max_translation_queue", 10)))
+        asr_buffer = float(cfg.get("asr_buffer_duration", 0.6))
+        asr_overlap = float(cfg.get("asr_overlap", 0.05))
+        max_queue = int(cfg.get("max_translation_queue", 2))
+
+        # 兼容旧配置：如果仍是历史默认慢参数，自动迁移为低延迟参数
+        if (
+            config_version < 2
+            and abs(asr_buffer - 1.5) < 1e-6
+            and abs(asr_overlap - 0.3) < 1e-6
+            and max_queue == 10
+        ):
+            asr_buffer = 0.6
+            asr_overlap = 0.05
+            max_queue = 2
+
+        self.asr_buffer_spin.setValue(asr_buffer)
+        self.asr_overlap_spin.setValue(asr_overlap)
+        self.max_queue_spin.setValue(max_queue)
 
     def _save_gui_config(self) -> None:
         """保存界面配置到本地"""

@@ -94,13 +94,13 @@ localtrans download piper-zh_CN-huayan
 localtrans --help
 localtrans check
 localtrans devices
-localtrans run -s en -t zh
+localtrans run -s zh -t en
 ```
 
 禁用 TTS：
 
 ```powershell
-localtrans run -s en -t zh --no-tts
+localtrans run -s zh -t en --no-tts
 ```
 
 ### 6.2 GUI
@@ -114,6 +114,21 @@ GUI 关键功能：
 - 在“运行配置”页可选择 ASR/MT/TTS 后端。
 - 在“模型下载与自动配置”中可选择要下载的模型。
 - 勾选“应用/启动时自动下载并配置所选模型”后，点击“应用到当前会话”或“开始翻译”会自动处理模型。
+- 实时链路已启用增量流式输出（短句分段即译），并将 TTS 与 MT 解耦，减少排队延迟。
+
+### 6.3 低延迟（<1s）推荐参数
+
+在 GUI「运行配置 -> 音频与延迟」中建议：
+
+- `ASR缓冲时长(s) = 0.6`
+- `ASR重叠时长(s) = 0.05`
+- `最大翻译队列 = 2`
+
+推荐组合（中译英）：
+
+- ASR: `faster-whisper`（GPU优先）
+- MT: `argos-ct2` + `argos-zh-en`
+- TTS: `piper-en_US-lessac`（若先追求最低延迟，可先关闭 TTS 验证文本链路）
 
 ## 7. 腾讯会议接入（你说话 -> 会议其他人听到翻译语音）
 
@@ -146,8 +161,8 @@ CLI 也可通过环境变量覆盖：
 ```powershell
 $env:LOCALTRANS_TTS__ENGINE="piper"
 $env:LOCALTRANS_TTS__MODEL_PATH="C:\Users\<你的用户名>\.localtrans\models\tts\piper-zh_CN-huayan\zh\zh_CN\huayan\medium\zh_CN-huayan-medium.onnx"
-$env:LOCALTRANS_TTS__LANGUAGE="zh"
-localtrans run -s en -t zh
+$env:LOCALTRANS_TTS__LANGUAGE="en"
+localtrans run -s zh -t en
 ```
 
 ## 9. CUDA 说明

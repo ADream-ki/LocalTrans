@@ -49,7 +49,7 @@ class ASRConfig(BaseModel):
     
     # 流式配置
     beam_size: int = Field(default=1, description="beam search大小")
-    vad_filter: bool = Field(default=True, description="启用VAD静音过滤")
+    vad_filter: bool = Field(default=False, description="启用VAD静音过滤")
     word_timestamps: bool = Field(default=False, description="生成词级时间戳")
 
 
@@ -57,12 +57,12 @@ class MTConfig(BaseModel):
     """MT机器翻译配置"""
     # 模型配置
     model_type: str = Field(default="argos-ct2", description="模型类型: argos-ct2, argos, nllb, nllb-ct2, marian")
-    model_name: str = Field(default="argos-en-zh", description="模型名称")
+    model_name: str = Field(default="argos-zh-en", description="模型名称")
     model_path: Optional[Path] = Field(default=None, description="本地模型路径")
     
     # 翻译配置
-    source_lang: str = Field(default="en", description="源语言代码")
-    target_lang: str = Field(default="zh", description="目标语言代码")
+    source_lang: str = Field(default="zh", description="源语言代码")
+    target_lang: str = Field(default="en", description="目标语言代码")
     
     # 性能配置
     device: str = Field(default="auto", description="推理设备: auto, cpu, cuda")

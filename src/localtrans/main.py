@@ -117,8 +117,8 @@ def download_model(model_name: str, force: bool = False) -> None:
 
 
 def run_interactive(
-    source_lang: str = "en",
-    target_lang: str = "zh",
+    source_lang: str = "zh",
+    target_lang: str = "en",
     enable_tts: bool = True,
 ) -> None:
     """运行交互式翻译"""
@@ -185,8 +185,8 @@ def main() -> int:
     subparsers = parser.add_subparsers(dest="command", help="命令")
     
     run_parser = subparsers.add_parser("run", help="启动实时翻译")
-    run_parser.add_argument("-s", "--source", default="en", help="源语言 (默认: en)")
-    run_parser.add_argument("-t", "--target", default="zh", help="目标语言 (默认: zh)")
+    run_parser.add_argument("-s", "--source", default="zh", help="源语言 (默认: zh)")
+    run_parser.add_argument("-t", "--target", default="en", help="目标语言 (默认: en)")
     run_parser.add_argument("--no-tts", action="store_true", help="禁用语音合成")
     
     subparsers.add_parser("devices", help="列出音频设备")

@@ -131,17 +131,38 @@ class FasterWhisperBackend(ASRBackend):
             
         except ImportError:
             raise ImportError("请安装faster-whisper: pip install faster-whisper")
+
+    @staticmethod
+    def _prepare_audio(audio: np.ndarray) -> np.ndarray:
+        """将输入音频标准化为 faster-whisper 期望的 1D float32[-1,1]"""
+        arr = np.asarray(audio)
+        if arr.ndim > 1:
+            arr = arr.reshape(-1)
+
+        if np.issubdtype(arr.dtype, np.integer):
+            info = np.iinfo(arr.dtype)
+            denom = max(abs(info.min), abs(info.max))
+            arr = arr.astype(np.float32) / float(denom if denom > 0 else 32768)
+        else:
+            arr = arr.astype(np.float32, copy=False)
+
+        np.clip(arr, -1.0, 1.0, out=arr)
+        return np.ascontiguousarray(arr)
     
     def transcribe(self, audio: np.ndarray, **kwargs) -> TranscriptionResult:
         """转录音频"""
         start_time = time.time()
+
+        prepared_audio = self._prepare_audio(audio)
         
         segments, info = self._model.transcribe(
-            audio,
+            prepared_audio,
             language=self.config.language,
             beam_size=self.config.beam_size,
             vad_filter=self.config.vad_filter,
             word_timestamps=self.config.word_timestamps,
+            without_timestamps=not self.config.word_timestamps,
+            condition_on_previous_text=False,
             **kwargs
         )
         

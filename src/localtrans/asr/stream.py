@@ -103,14 +103,14 @@ class StreamingASR:
                     
                     except Exception as e:
                         logger.error(f"转录错误: {e}")
-                    
-                    # 保留重叠部分
-                    if self._overlap_samples > 0 and len(audio_data) > self._overlap_samples:
-                        buffer = [audio_data[-self._overlap_samples:]]
-                        total_samples = self._overlap_samples
-                    else:
-                        buffer = []
-                        total_samples = 0
+                    finally:
+                        # 无论转录成功或失败都必须推进窗口，避免缓冲无限增长
+                        if self._overlap_samples > 0 and len(audio_data) > self._overlap_samples:
+                            buffer = [audio_data[-self._overlap_samples:]]
+                            total_samples = self._overlap_samples
+                        else:
+                            buffer = []
+                            total_samples = 0
                         
             except queue.Empty:
                 continue

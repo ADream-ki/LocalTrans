@@ -2,6 +2,7 @@
 
 import pytest
 import numpy as np
+import time
 from unittest.mock import Mock, patch, MagicMock
 
 from localtrans.asr.engine import ASREngine, TranscriptionResult
@@ -70,3 +71,32 @@ class TestStreamingASR:
         
         # 队列应该为空，因为没有运行
         assert streaming._audio_queue.empty()
+
+    def test_buffer_does_not_grow_unbounded_after_transcribe_error(self):
+        """转录异常后应推进窗口，避免缓冲无限增长"""
+        call_lengths = []
+
+        class FailingEngine:
+            def transcribe(self, audio):
+                call_lengths.append(len(audio))
+                raise RuntimeError("mock transcribe failure")
+
+        streaming = StreamingASR(
+            asr_engine=FailingEngine(),
+            buffer_duration=0.1,
+            overlap_duration=0.05,
+        )
+        streaming.start()
+
+        try:
+            chunk = np.random.randint(-1000, 1000, size=1600, dtype=np.int16)
+            for _ in range(16):
+                streaming.put_audio(chunk)
+                time.sleep(0.01)
+            time.sleep(0.2)
+        finally:
+            streaming.stop()
+
+        assert len(call_lengths) >= 3
+        # 正常推进时每次处理片段长度应保持在小窗口范围，不会线性失控增长
+        assert max(call_lengths) < 16000
