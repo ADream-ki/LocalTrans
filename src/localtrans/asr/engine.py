@@ -117,7 +117,7 @@ class FasterWhisperBackend(ASRBackend):
             if device == "cpu" and compute_type in {"float16", "int8_float16"}:
                 compute_type = "int8"
             
-            model_path = self.config.model_path or self.config.model_size
+            model_path = self.config.model_path or self.config.model_name or self.config.model_size
             if isinstance(model_path, Path):
                 model_path = str(model_path)
             
@@ -158,6 +158,7 @@ class FasterWhisperBackend(ASRBackend):
         segments, info = self._model.transcribe(
             prepared_audio,
             language=self.config.language,
+            task=self.config.task,
             beam_size=self.config.beam_size,
             vad_filter=self.config.vad_filter,
             word_timestamps=self.config.word_timestamps,
@@ -169,20 +170,37 @@ class FasterWhisperBackend(ASRBackend):
         # 合并所有片段
         text_parts = []
         words = []
+        segment_confidences = []
         for segment in segments:
             text_parts.append(segment.text)
+            avg_logprob = getattr(segment, "avg_logprob", None)
+            if avg_logprob is not None:
+                # avg_logprob 越接近0越可信，转为 0-1 近似置信度
+                conf = float(np.exp(float(avg_logprob)))
+                conf = max(0.0, min(conf, 1.0))
+                segment_confidences.append(conf)
             if segment.words:
-                words.extend([{
+                word_items = [{
                     "word": w.word,
                     "start": w.start,
                     "end": w.end,
                     "probability": w.probability,
-                } for w in segment.words])
+                } for w in segment.words]
+                words.extend(word_items)
+                probs = [float(item["probability"]) for item in word_items if item.get("probability") is not None]
+                if probs:
+                    segment_confidences.append(sum(probs) / len(probs))
+
+        confidence = 0.0
+        if segment_confidences:
+            confidence = float(sum(segment_confidences) / len(segment_confidences))
+        elif info.language_probability is not None:
+            confidence = float(info.language_probability)
         
         result = TranscriptionResult(
             text=" ".join(text_parts).strip(),
             language=info.language,
-            confidence=info.language_probability,
+            confidence=confidence,
             start_time=0.0,
             end_time=info.duration,
             words=words if words else None,
@@ -305,6 +323,396 @@ class WhisperBackend(ASRBackend):
             yield self.transcribe(audio_data, **kwargs)
 
 
+class FunASRBackend(ASRBackend):
+    """FunASR后端（优先用于中文实时场景）"""
+
+    def __init__(self, config: ASRConfig):
+        self.config = config
+        self._model = None
+        self._load_model()
+
+    def _resolve_model_ref(self) -> str:
+        if self.config.model_path:
+            return str(self.config.model_path)
+        if self.config.model_name:
+            return str(self.config.model_name)
+
+        model_size = (self.config.model_size or "").strip()
+        if model_size.lower() in {"tiny", "base", "small", "medium", "large"}:
+            return "iic/SenseVoiceSmall"
+        return model_size or "iic/SenseVoiceSmall"
+
+    def _load_model(self):
+        try:
+            from funasr import AutoModel
+        except ImportError as exc:
+            raise ImportError("请安装funasr: pip install funasr") from exc
+
+        device = self.config.device
+        if device == "auto":
+            try:
+                import torch
+
+                device = "cuda:0" if torch.cuda.is_available() else "cpu"
+            except Exception:
+                device = "cpu"
+        elif device == "cuda":
+            device = "cuda:0"
+
+        model_ref = self._resolve_model_ref()
+        logger.info(f"加载FunASR模型: {model_ref}, device={device}")
+
+        # 兼容不同版本 FunASR AutoModel 参数签名
+        init_attempts = [
+            {"trust_remote_code": True, "disable_update": True},
+            {"trust_remote_code": True},
+            {},
+        ]
+        last_exc = None
+        for extra_kwargs in init_attempts:
+            try:
+                self._model = AutoModel(model=model_ref, device=device, **extra_kwargs)
+                last_exc = None
+                break
+            except TypeError as exc:
+                last_exc = exc
+                continue
+
+        if self._model is None:
+            raise RuntimeError(f"FunASR模型初始化失败: {last_exc}") from last_exc
+
+        logger.info("FunASR模型加载完成")
+
+    @staticmethod
+    def _extract_text(result_obj) -> str:
+        if result_obj is None:
+            return ""
+        if isinstance(result_obj, str):
+            return result_obj.strip()
+        if isinstance(result_obj, dict):
+            text_val = result_obj.get("text", "")
+            if isinstance(text_val, str):
+                return text_val.strip()
+            sentence_info = result_obj.get("sentence_info")
+            if isinstance(sentence_info, list):
+                items = []
+                for item in sentence_info:
+                    if isinstance(item, dict):
+                        text_item = item.get("text")
+                        if isinstance(text_item, str) and text_item.strip():
+                            items.append(text_item.strip())
+                if items:
+                    return " ".join(items).strip()
+            return ""
+        if isinstance(result_obj, list):
+            parts = [FunASRBackend._extract_text(item) for item in result_obj]
+            return " ".join([p for p in parts if p]).strip()
+        return str(result_obj).strip()
+
+    def transcribe(self, audio: np.ndarray, **kwargs) -> TranscriptionResult:
+        prepared_audio = FasterWhisperBackend._prepare_audio(audio)
+        duration = len(prepared_audio) / settings.audio.sample_rate if len(prepared_audio) else 0.0
+
+        generate_kwargs = {
+            "input": prepared_audio,
+            "language": self.config.language or "auto",
+        }
+        generate_kwargs.update(kwargs)
+
+        try:
+            result_obj = self._model.generate(**generate_kwargs)
+        except TypeError:
+            # 兼容旧版本参数
+            generate_kwargs.pop("language", None)
+            result_obj = self._model.generate(**generate_kwargs)
+
+        text = self._extract_text(result_obj)
+        return TranscriptionResult(
+            text=text,
+            language=self.config.language or "zh",
+            confidence=0.0,
+            start_time=0.0,
+            end_time=duration,
+            words=None,
+        )
+
+    def transcribe_stream(
+        self,
+        audio_stream: Iterator[np.ndarray],
+        **kwargs
+    ) -> Generator[TranscriptionResult, None, None]:
+        buffer = []
+        buffer_duration = 0.0
+        min_chunk_duration = 1.2
+
+        for chunk in audio_stream:
+            buffer.append(chunk)
+            chunk_duration = len(chunk) / settings.audio.sample_rate
+            buffer_duration += chunk_duration
+
+            if buffer_duration >= min_chunk_duration:
+                audio_data = np.concatenate(buffer)
+                result = self.transcribe(audio_data, **kwargs)
+                if result.text.strip():
+                    yield result
+                buffer = []
+                buffer_duration = 0.0
+
+        if buffer:
+            result = self.transcribe(np.concatenate(buffer), **kwargs)
+            if result.text.strip():
+                yield result
+
+
+class SherpaOnnxBackend(ASRBackend):
+    """sherpa-onnx 后端（优先使用本地模型目录）"""
+
+    def __init__(self, config: ASRConfig):
+        self.config = config
+        self._recognizer = None
+        self._sample_rate = settings.audio.sample_rate
+        self._load_model()
+
+    def _resolve_model_dir(self) -> Path:
+        if self.config.model_path:
+            path = Path(self.config.model_path)
+            if not path.exists():
+                raise FileNotFoundError(f"sherpa-onnx模型路径不存在: {path}")
+            return path
+
+        if self.config.model_name:
+            named = settings.models_dir / "asr" / str(self.config.model_name)
+            if named.exists():
+                return named
+            maybe_path = Path(self.config.model_name)
+            if maybe_path.exists():
+                return maybe_path
+
+        fallback = settings.models_dir / "asr" / "sherpa-onnx-zh-en-zipformer"
+        if fallback.exists():
+            return fallback
+        raise FileNotFoundError(
+            "未找到sherpa-onnx模型目录，请先配置LOCALTRANS_ASR__MODEL_PATH或下载模型"
+        )
+
+    @staticmethod
+    def _find_first_existing(base_dir: Path, candidates: list[str]) -> Optional[Path]:
+        for name in candidates:
+            p = base_dir / name
+            if p.exists():
+                return p
+        return None
+
+    @staticmethod
+    def _extract_result_text(result_obj) -> str:
+        if result_obj is None:
+            return ""
+        if isinstance(result_obj, str):
+            return result_obj.strip()
+        text = getattr(result_obj, "text", None)
+        if isinstance(text, str):
+            return text.strip()
+        if isinstance(result_obj, dict):
+            val = result_obj.get("text", "")
+            return str(val).strip()
+        return str(result_obj).strip()
+
+    @staticmethod
+    def _provider_from_device(device: str) -> str:
+        dev = (device or "auto").lower()
+        if dev == "cuda":
+            return "cuda"
+        return "cpu"
+
+    def _build_transducer_recognizer(self, sherpa_onnx, model_dir: Path):
+        tokens = self._find_first_existing(model_dir, ["tokens.txt", "tokens"])
+        encoder = self._find_first_existing(model_dir, ["encoder.onnx", "encoder.int8.onnx"])
+        decoder = self._find_first_existing(model_dir, ["decoder.onnx", "decoder.int8.onnx"])
+        joiner = self._find_first_existing(model_dir, ["joiner.onnx", "joiner.int8.onnx"])
+        if not all([tokens, encoder, decoder, joiner]):
+            return None
+
+        recognizer_cls = getattr(sherpa_onnx, "OfflineRecognizer", None)
+        if recognizer_cls is None:
+            return None
+
+        ctor = getattr(recognizer_cls, "from_transducer", None)
+        if ctor is None:
+            return None
+
+        provider = self._provider_from_device(self.config.device)
+        common = {
+            "tokens": str(tokens),
+            "num_threads": max(1, int(getattr(settings, "max_workers", 1))),
+            "sample_rate": self._sample_rate,
+            "feature_dim": 80,
+            "decoding_method": "greedy_search",
+            "provider": provider,
+        }
+
+        attempts = [
+            {
+                **common,
+                "encoder": str(encoder),
+                "decoder": str(decoder),
+                "joiner": str(joiner),
+            },
+            {
+                **common,
+                "encoder_model": str(encoder),
+                "decoder_model": str(decoder),
+                "joiner_model": str(joiner),
+            },
+        ]
+
+        last_exc = None
+        for kwargs in attempts:
+            try:
+                return ctor(**kwargs)
+            except TypeError as exc:
+                last_exc = exc
+                continue
+
+        if last_exc is not None:
+            raise RuntimeError(f"sherpa-onnx transducer初始化失败: {last_exc}") from last_exc
+        return None
+
+    def _build_paraformer_recognizer(self, sherpa_onnx, model_dir: Path):
+        tokens = self._find_first_existing(model_dir, ["tokens.txt", "tokens"])
+        model = self._find_first_existing(
+            model_dir,
+            [
+                "paraformer.onnx",
+                "model.int8.onnx",
+                "model.onnx",
+            ],
+        )
+        if not all([tokens, model]):
+            return None
+
+        recognizer_cls = getattr(sherpa_onnx, "OfflineRecognizer", None)
+        if recognizer_cls is None:
+            return None
+
+        ctor = getattr(recognizer_cls, "from_paraformer", None)
+        if ctor is None:
+            return None
+
+        provider = self._provider_from_device(self.config.device)
+        common = {
+            "tokens": str(tokens),
+            "num_threads": max(1, int(getattr(settings, "max_workers", 1))),
+            "sample_rate": self._sample_rate,
+            "feature_dim": 80,
+            "decoding_method": "greedy_search",
+            "provider": provider,
+        }
+        attempts = [
+            {**common, "paraformer": str(model)},
+            {**common, "model": str(model)},
+            {**common, "model_path": str(model)},
+        ]
+
+        last_exc = None
+        for kwargs in attempts:
+            try:
+                return ctor(**kwargs)
+            except TypeError as exc:
+                last_exc = exc
+                continue
+
+        if last_exc is not None:
+            raise RuntimeError(f"sherpa-onnx paraformer初始化失败: {last_exc}") from last_exc
+        return None
+
+    def _load_model(self):
+        try:
+            import sherpa_onnx
+        except ImportError as exc:
+            raise ImportError("请安装sherpa-onnx: pip install sherpa-onnx") from exc
+
+        model_dir = self._resolve_model_dir()
+        logger.info(f"加载sherpa-onnx模型目录: {model_dir}")
+
+        recognizer = self._build_transducer_recognizer(sherpa_onnx, model_dir)
+        if recognizer is None:
+            recognizer = self._build_paraformer_recognizer(sherpa_onnx, model_dir)
+
+        if recognizer is None:
+            raise RuntimeError(
+                "未识别的sherpa-onnx模型布局，需包含 "
+                "transducer(encoder/decoder/joiner/tokens) 或 paraformer(model/tokens)"
+            )
+
+        self._recognizer = recognizer
+        logger.info("sherpa-onnx模型加载完成")
+
+    def transcribe(self, audio: np.ndarray, **kwargs) -> TranscriptionResult:
+        prepared_audio = FasterWhisperBackend._prepare_audio(audio)
+        duration = len(prepared_audio) / float(self._sample_rate) if len(prepared_audio) else 0.0
+        if prepared_audio.size == 0:
+            return TranscriptionResult(
+                text="",
+                language=self.config.language or "zh",
+                confidence=0.0,
+                start_time=0.0,
+                end_time=duration,
+                words=None,
+            )
+
+        stream = self._recognizer.create_stream()
+        stream.accept_waveform(self._sample_rate, prepared_audio)
+
+        decode_fn = getattr(self._recognizer, "decode_stream", None)
+        if callable(decode_fn):
+            decode_fn(stream)
+        else:
+            decode_streams = getattr(self._recognizer, "decode_streams", None)
+            if callable(decode_streams):
+                decode_streams([stream])
+            else:
+                raise RuntimeError("sherpa-onnx识别器不支持decode_stream/decode_streams")
+
+        stream_result = getattr(stream, "result", None)
+        text = self._extract_result_text(stream_result)
+
+        return TranscriptionResult(
+            text=text,
+            language=self.config.language or "zh",
+            confidence=0.0,
+            start_time=0.0,
+            end_time=duration,
+            words=None,
+        )
+
+    def transcribe_stream(
+        self,
+        audio_stream: Iterator[np.ndarray],
+        **kwargs
+    ) -> Generator[TranscriptionResult, None, None]:
+        buffer = []
+        buffer_duration = 0.0
+        min_chunk_duration = 1.0
+
+        for chunk in audio_stream:
+            buffer.append(chunk)
+            chunk_duration = len(chunk) / settings.audio.sample_rate
+            buffer_duration += chunk_duration
+
+            if buffer_duration >= min_chunk_duration:
+                audio_data = np.concatenate(buffer)
+                result = self.transcribe(audio_data, **kwargs)
+                if result.text.strip():
+                    yield result
+                buffer = []
+                buffer_duration = 0.0
+
+        if buffer:
+            result = self.transcribe(np.concatenate(buffer), **kwargs)
+            if result.text.strip():
+                yield result
+
+
 class VoskBackend(ASRBackend):
     """Vosk离线识别后端"""
 
@@ -318,8 +726,39 @@ class VoskBackend(ASRBackend):
     def _resolve_model_path(self) -> Path:
         if self.config.model_path:
             return Path(self.config.model_path)
+        models_dir = settings.models_dir / "asr"
+
+        # 若 model_size 直接给出 vosk 模型目录名，优先使用
+        model_size = (self.config.model_size or "").strip()
+        if model_size.startswith("vosk-model-"):
+            named_path = models_dir / model_size
+            if named_path.exists():
+                return named_path
+
+        lang = (self.config.language or "").lower()
+        candidates: list[Path]
+        if lang.startswith("zh"):
+            candidates = [
+                models_dir / "vosk-model-small-cn-0.22",
+                models_dir / "vosk-model-small-en-us-0.15",
+            ]
+        elif lang.startswith("en"):
+            candidates = [
+                models_dir / "vosk-model-small-en-us-0.15",
+                models_dir / "vosk-model-small-cn-0.22",
+            ]
+        else:
+            candidates = [
+                models_dir / "vosk-model-small-en-us-0.15",
+                models_dir / "vosk-model-small-cn-0.22",
+            ]
+
+        for path in candidates:
+            if path.exists():
+                return path
+
         # 默认模型路径（可由下载器提前准备）
-        return settings.models_dir / "asr" / "vosk-model-small-en-us-0.15"
+        return models_dir / "vosk-model-small-en-us-0.15"
 
     def _load_model(self) -> None:
         try:
@@ -414,6 +853,8 @@ class ASREngine:
     BACKENDS = {
         "faster-whisper": FasterWhisperBackend,
         "whisper": WhisperBackend,
+        "funasr": FunASRBackend,
+        "sherpa-onnx": SherpaOnnxBackend,
         "vosk": VoskBackend,
     }
     
@@ -432,8 +873,22 @@ class ASREngine:
             self._backend = backend_class(self.config)
             logger.info(f"ASR引擎初始化完成: {self.config.model_type}")
         except Exception as exc:
-            # 缺少重量级依赖/模型时，降级为可运行模式，保障端到端链路可验证
-            logger.warning(f"ASR后端加载失败，自动降级到Fallback: {exc}")
+            logger.warning(f"ASR后端加载失败({self.config.model_type}): {exc}")
+
+            # 运行时兜底：优先回退到 Vosk，避免进入占位 fallback-asr
+            if self.config.model_type != "vosk":
+                try:
+                    fallback_cfg = self.config.model_copy(deep=True)
+                    fallback_cfg.model_type = "vosk"
+                    fallback_cfg.model_name = None
+                    fallback_cfg.model_path = None
+                    self._backend = VoskBackend(fallback_cfg)
+                    logger.warning("ASR已自动回退到 vosk 后端")
+                    return
+                except Exception as fallback_exc:
+                    logger.warning(f"ASR回退到vosk失败: {fallback_exc}")
+
+            # 缺少依赖/模型时，最终降级到可运行占位后端
             self._backend = FallbackASRBackend(self.config, reason=str(exc))
     
     def transcribe(self, audio: np.ndarray) -> TranscriptionResult:

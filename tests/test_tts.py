@@ -44,6 +44,14 @@ class TestTTSEngine:
         assert config.engine == "pyttsx3"
         assert config.stream_enabled is True
 
+    def test_close_backend(self):
+        """测试资源释放"""
+        with patch.object(TTSEngine, "_load_backend"):
+            engine = TTSEngine()
+            engine._backend = Mock()
+            engine.close()
+            engine._backend.close.assert_called_once()
+
 
 class TestStreamingTTS:
     """流式TTS测试"""

@@ -42,6 +42,10 @@ class TTSBackend(ABC):
         """流式合成"""
         pass
 
+    def close(self) -> None:
+        """释放后端资源"""
+        return
+
 
 class FallbackTTSBackend(TTSBackend):
     """依赖缺失时的静音回退后端"""
@@ -189,6 +193,9 @@ class PiperBackend(TTSBackend):
             if audio.size:
                 yield audio
 
+    def close(self) -> None:
+        self._voice = None
+
 
 class CoquiTTSBackend(TTSBackend):
     """
@@ -268,6 +275,9 @@ class CoquiTTSBackend(TTSBackend):
             if sentence.strip():
                 result = self.synthesize(sentence)
                 yield result.audio
+
+    def close(self) -> None:
+        self._tts = None
 
 
 class EdgeTTSBackend(TTSBackend):
@@ -440,6 +450,15 @@ class Pyttsx3Backend(TTSBackend):
     def synthesize_stream(self, text: str) -> Generator[np.ndarray, None, None]:
         yield self.synthesize(text).audio
 
+    def close(self) -> None:
+        if not self._engine:
+            return
+        try:
+            self._engine.stop()
+        except Exception:
+            pass
+        self._engine = None
+
 
 class TTSEngine:
     """
@@ -490,3 +509,11 @@ class TTSEngine:
         
         if blocking:
             sd.wait()
+
+    def close(self) -> None:
+        if not self._backend:
+            return
+        try:
+            self._backend.close()
+        except Exception as exc:
+            logger.warning(f"TTS资源释放异常: {exc}")

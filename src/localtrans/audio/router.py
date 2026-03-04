@@ -146,11 +146,19 @@ class AudioOutputManager:
         
         logger.info("AudioOutputManager初始化完成")
     
-    def play(self, audio_data: np.ndarray, blocking: bool = False) -> None:
+    def play(
+        self,
+        audio_data: np.ndarray,
+        blocking: bool = False,
+        sample_rate: Optional[int] = None,
+    ) -> None:
         """播放音频数据"""
         with self._lock:
             try:
-                sd.play(audio_data, samplerate=self.sample_rate)
+                if audio_data is None or len(audio_data) == 0:
+                    return
+                effective_sr = int(sample_rate or self.sample_rate)
+                sd.play(audio_data, samplerate=effective_sr)
                 if blocking:
                     sd.wait()
             except Exception as e:
@@ -161,11 +169,15 @@ class AudioOutputManager:
         audio_data: np.ndarray,
         device_id: Optional[int],
         blocking: bool = False,
+        sample_rate: Optional[int] = None,
     ) -> None:
         """播放音频到指定设备"""
         with self._lock:
             try:
-                sd.play(audio_data, samplerate=self.sample_rate, device=device_id)
+                if audio_data is None or len(audio_data) == 0:
+                    return
+                effective_sr = int(sample_rate or self.sample_rate)
+                sd.play(audio_data, samplerate=effective_sr, device=device_id)
                 if blocking:
                     sd.wait()
             except Exception as e:

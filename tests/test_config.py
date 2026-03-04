@@ -4,7 +4,7 @@ import pytest
 from pathlib import Path
 
 from localtrans.config import settings, Settings
-from localtrans.config.models import AudioConfig, ASRConfig, MTConfig, TTSConfig
+from localtrans.config.models import AudioConfig, ASRConfig, MTConfig, TTSConfig, LanguagePair
 
 
 class TestSettings:
@@ -30,7 +30,14 @@ class TestSettings:
         
         assert config.model_type == "vosk"
         assert config.model_size == "base"
+        assert config.model_name is None
         assert config.vad_filter is False
+
+    def test_language_pair_default(self):
+        """测试默认语言方向"""
+        pair = LanguagePair()
+        assert pair.source == "zh"
+        assert pair.target == "en"
     
     def test_mt_config(self):
         """测试MT配置"""

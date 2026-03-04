@@ -188,14 +188,33 @@ class MainWindow(QMainWindow):
         self.asr_backend_combo.addItem("vosk", "vosk")
         self.asr_backend_combo.addItem("faster-whisper", "faster-whisper")
         self.asr_backend_combo.addItem("whisper", "whisper")
+        self.asr_backend_combo.addItem("funasr", "funasr")
+        self.asr_backend_combo.addItem("sherpa-onnx", "sherpa-onnx")
         self._set_combo_data(self.asr_backend_combo, settings.asr.model_type)
         model_form.addRow("ASR后端", self.asr_backend_combo)
 
         self.asr_model_combo = QComboBox()
-        for size in ("tiny", "base", "small", "medium", "large"):
+        self.asr_model_combo.setEditable(True)
+        for size in (
+            "tiny",
+            "base",
+            "small",
+            "medium",
+            "large",
+            "large-v3",
+            "large-v3-turbo",
+            "distil-large-v3",
+            "turbo",
+            "iic/SenseVoiceSmall",
+            "sherpa-onnx-zh-en-zipformer",
+        ):
             self.asr_model_combo.addItem(size, size)
         self._set_combo_data(self.asr_model_combo, settings.asr.model_size)
         model_form.addRow("ASR模型大小", self.asr_model_combo)
+
+        self.direct_asr_translate_checkbox = QCheckBox("Whisper中译英直出（跳过MT）")
+        self.direct_asr_translate_checkbox.setChecked(False)
+        model_form.addRow("ASR直译", self.direct_asr_translate_checkbox)
 
         self.mt_backend_combo = QComboBox()
         self.mt_backend_combo.addItem("argos-ct2", "argos-ct2")
@@ -280,6 +299,13 @@ class MainWindow(QMainWindow):
         self.output_virtual_checkbox.setChecked(True)
         audio_form.addRow("输出路由", self.output_virtual_checkbox)
 
+        self.runtime_profile_combo = QComboBox()
+        self.runtime_profile_combo.addItem("实时优先 (<1s)", "realtime")
+        self.runtime_profile_combo.addItem("平衡模式", "balanced")
+        self.runtime_profile_combo.addItem("质量优先", "quality")
+        self._set_combo_data(self.runtime_profile_combo, "realtime")
+        audio_form.addRow("运行模式", self.runtime_profile_combo)
+
         self.asr_buffer_spin = QDoubleSpinBox()
         self.asr_buffer_spin.setRange(0.3, 8.0)
         self.asr_buffer_spin.setSingleStep(0.1)
@@ -300,6 +326,10 @@ class MainWindow(QMainWindow):
         layout.addWidget(audio_group)
 
         btn_row = QHBoxLayout()
+        self.fast_preset_btn = QPushButton("极速(<1s)预设")
+        self.fast_preset_btn.clicked.connect(self._apply_ultra_low_latency_preset)
+        btn_row.addWidget(self.fast_preset_btn)
+
         self.load_cfg_btn = QPushButton("加载配置")
         self.load_cfg_btn.clicked.connect(lambda: self._load_gui_config(silent=False))
         btn_row.addWidget(self.load_cfg_btn)
@@ -316,6 +346,33 @@ class MainWindow(QMainWindow):
 
         layout.addStretch()
         return tab
+
+    def _apply_ultra_low_latency_preset(self) -> None:
+        """一键应用低延迟预设（中->英）"""
+        self._set_combo_data(self.source_lang_combo, "zh")
+        self._set_combo_data(self.target_lang_combo, "en")
+        self.tts_checkbox.setChecked(True)
+
+        self._set_combo_data(self.asr_backend_combo, "faster-whisper")
+        self._set_combo_data(self.asr_model_combo, "small")
+        self.direct_asr_translate_checkbox.setChecked(False)
+        self._set_combo_data(self.mt_backend_combo, "argos-ct2")
+        self.mt_model_name_edit.setText("argos-zh-en")
+        self._set_combo_data(self.tts_engine_combo, "piper")
+        self.tts_model_name_edit.setText("piper-en_US-lessac")
+
+        self._set_combo_data(self.asr_download_combo, "faster-whisper-small")
+        self._set_combo_data(self.mt_download_combo, "argos-zh-en")
+        self._set_combo_data(self.tts_download_combo, "piper-en_US-lessac")
+        self.auto_download_checkbox.setChecked(True)
+
+        self.output_virtual_checkbox.setChecked(True)
+        self._set_combo_data(self.runtime_profile_combo, "realtime")
+        self.asr_buffer_spin.setValue(0.45)
+        self.asr_overlap_spin.setValue(0.03)
+        self.max_queue_spin.setValue(1)
+
+        self.statusBar().showMessage("已应用极速(<1s)预设，建议直接点击开始翻译验证", 4000)
 
     def _create_menu(self) -> None:
         """创建菜单"""
@@ -382,6 +439,9 @@ class MainWindow(QMainWindow):
             if combo.itemData(idx) == value:
                 combo.setCurrentIndex(idx)
                 return True
+        if combo.isEditable() and value is not None:
+            combo.setEditText(str(value))
+            return True
         return False
 
     @staticmethod
@@ -442,6 +502,7 @@ class MainWindow(QMainWindow):
         """将下载模型自动映射到当前配置"""
         if model_name.startswith("vosk-model"):
             settings.asr.model_type = "vosk"
+            settings.asr.model_name = None
             settings.asr.model_path = model_path
             self._set_combo_data(self.asr_backend_combo, "vosk")
             return
@@ -449,6 +510,7 @@ class MainWindow(QMainWindow):
         if model_name.startswith("whisper-"):
             settings.asr.model_type = "whisper"
             settings.asr.model_size = model_name.replace("whisper-", "", 1)
+            settings.asr.model_name = None
             settings.asr.model_path = None
             self._set_combo_data(self.asr_backend_combo, "whisper")
             self._set_combo_data(self.asr_model_combo, settings.asr.model_size)
@@ -457,8 +519,27 @@ class MainWindow(QMainWindow):
         if model_name.startswith("faster-whisper-"):
             settings.asr.model_type = "faster-whisper"
             settings.asr.model_size = model_name.replace("faster-whisper-", "", 1)
+            settings.asr.model_name = None
             settings.asr.model_path = model_path
             self._set_combo_data(self.asr_backend_combo, "faster-whisper")
+            self._set_combo_data(self.asr_model_combo, settings.asr.model_size)
+            return
+
+        if model_name.startswith("funasr-"):
+            settings.asr.model_type = "funasr"
+            settings.asr.model_name = str(model_path) if model_path else "iic/SenseVoiceSmall"
+            settings.asr.model_size = settings.asr.model_name
+            settings.asr.model_path = model_path
+            self._set_combo_data(self.asr_backend_combo, "funasr")
+            self._set_combo_data(self.asr_model_combo, settings.asr.model_size)
+            return
+
+        if model_name.startswith("sherpa-onnx-"):
+            settings.asr.model_type = "sherpa-onnx"
+            settings.asr.model_name = str(model_path) if model_path else model_name
+            settings.asr.model_size = model_name
+            settings.asr.model_path = model_path
+            self._set_combo_data(self.asr_backend_combo, "sherpa-onnx")
             self._set_combo_data(self.asr_model_combo, settings.asr.model_size)
             return
 
@@ -564,12 +645,13 @@ class MainWindow(QMainWindow):
     def _collect_gui_config(self) -> dict:
         """采集当前界面配置"""
         return {
-            "config_version": 2,
+            "config_version": 3,
             "source_lang": self.source_lang_combo.currentData(),
             "target_lang": self.target_lang_combo.currentData(),
             "enable_tts": self.tts_checkbox.isChecked(),
             "asr_backend": self.asr_backend_combo.currentData(),
-            "asr_model_size": self.asr_model_combo.currentData(),
+            "asr_model_size": self.asr_model_combo.currentData() or self.asr_model_combo.currentText().strip(),
+            "direct_asr_translate": self.direct_asr_translate_checkbox.isChecked(),
             "mt_backend": self.mt_backend_combo.currentData(),
             "mt_model_name": self.mt_model_name_edit.text().strip(),
             "tts_engine": self.tts_engine_combo.currentData(),
@@ -580,6 +662,7 @@ class MainWindow(QMainWindow):
             "auto_download_models": self.auto_download_checkbox.isChecked(),
             "input_device_id": self.input_device_combo.currentData(),
             "output_to_virtual_device": self.output_virtual_checkbox.isChecked(),
+            "runtime_profile": self.runtime_profile_combo.currentData(),
             "asr_buffer_duration": self.asr_buffer_spin.value(),
             "asr_overlap": self.asr_overlap_spin.value(),
             "max_translation_queue": self.max_queue_spin.value(),
@@ -595,6 +678,7 @@ class MainWindow(QMainWindow):
 
         self._set_combo_data(self.asr_backend_combo, cfg.get("asr_backend", settings.asr.model_type))
         self._set_combo_data(self.asr_model_combo, cfg.get("asr_model_size", "base"))
+        self.direct_asr_translate_checkbox.setChecked(bool(cfg.get("direct_asr_translate", False)))
         self._set_combo_data(self.mt_backend_combo, cfg.get("mt_backend", settings.mt.model_type))
         self.mt_model_name_edit.setText(cfg.get("mt_model_name", settings.mt.model_name))
         self._set_combo_data(self.tts_engine_combo, cfg.get("tts_engine", settings.tts.engine))
@@ -606,6 +690,7 @@ class MainWindow(QMainWindow):
 
         self._set_combo_data(self.input_device_combo, cfg.get("input_device_id"))
         self.output_virtual_checkbox.setChecked(bool(cfg.get("output_to_virtual_device", True)))
+        self._set_combo_data(self.runtime_profile_combo, cfg.get("runtime_profile", "realtime"))
         asr_buffer = float(cfg.get("asr_buffer_duration", 0.6))
         asr_overlap = float(cfg.get("asr_overlap", 0.05))
         max_queue = int(cfg.get("max_translation_queue", 2))
@@ -624,6 +709,69 @@ class MainWindow(QMainWindow):
         self.asr_buffer_spin.setValue(asr_buffer)
         self.asr_overlap_spin.setValue(asr_overlap)
         self.max_queue_spin.setValue(max_queue)
+
+    @staticmethod
+    def _runtime_profile_tuning(
+        profile: str,
+        asr_buffer_duration: float,
+    ) -> dict:
+        profile = (profile or "realtime").lower()
+        if profile == "quality":
+            return {
+                "stream_flush_interval": 0.32,
+                "stream_min_chars": 4,
+                "stream_max_chars": 22,
+                "stream_agreement": 2,
+                "translation_batch_chars": 64,
+                "tts_merge_chars": 180,
+                "asr_beam_size": 3,
+                "asr_backend_vad_filter": True,
+                "asr_vad_enabled": True,
+                "asr_vad_energy_threshold": 0.008,
+                "asr_vad_silence_duration": 0.24,
+                "asr_min_buffer_duration": max(0.45, asr_buffer_duration * 0.7),
+                "asr_max_buffer_duration": max(asr_buffer_duration, 1.0),
+                "min_asr_confidence": 0.18,
+                "min_cjk_ratio": 0.15,
+                "drop_hallucination": True,
+            }
+        if profile == "balanced":
+            return {
+                "stream_flush_interval": 0.25,
+                "stream_min_chars": 3,
+                "stream_max_chars": 16,
+                "stream_agreement": 2,
+                "translation_batch_chars": 42,
+                "tts_merge_chars": 120,
+                "asr_beam_size": 2,
+                "asr_backend_vad_filter": True,
+                "asr_vad_enabled": True,
+                "asr_vad_energy_threshold": 0.01,
+                "asr_vad_silence_duration": 0.2,
+                "asr_min_buffer_duration": max(0.35, asr_buffer_duration * 0.6),
+                "asr_max_buffer_duration": max(asr_buffer_duration, 0.8),
+                "min_asr_confidence": 0.12,
+                "min_cjk_ratio": 0.1,
+                "drop_hallucination": True,
+            }
+        return {
+            "stream_flush_interval": 0.18,
+            "stream_min_chars": 2,
+            "stream_max_chars": 12,
+            "stream_agreement": 1,
+            "translation_batch_chars": 28,
+            "tts_merge_chars": 80,
+            "asr_beam_size": 1,
+            "asr_backend_vad_filter": False,
+            "asr_vad_enabled": True,
+            "asr_vad_energy_threshold": 0.012,
+            "asr_vad_silence_duration": 0.16,
+            "asr_min_buffer_duration": max(0.22, asr_buffer_duration * 0.5),
+            "asr_max_buffer_duration": max(asr_buffer_duration, 0.5),
+            "min_asr_confidence": 0.08,
+            "min_cjk_ratio": 0.08,
+            "drop_hallucination": True,
+        }
 
     def _save_gui_config(self) -> None:
         """保存界面配置到本地"""
@@ -656,7 +804,34 @@ class MainWindow(QMainWindow):
     def _apply_runtime_settings(self) -> RealtimeConfig:
         """把UI配置应用到运行时 settings，并返回流水线配置"""
         settings.asr.model_type = self.asr_backend_combo.currentData()
-        settings.asr.model_size = self.asr_model_combo.currentData()
+        asr_model_value = self.asr_model_combo.currentData() or self.asr_model_combo.currentText().strip()
+        settings.asr.model_size = asr_model_value
+        asr_path_candidate = Path(asr_model_value) if asr_model_value else None
+        if settings.asr.model_type == "funasr":
+            settings.asr.model_name = asr_model_value or "iic/SenseVoiceSmall"
+            if asr_path_candidate and asr_path_candidate.exists():
+                settings.asr.model_path = asr_path_candidate
+            elif settings.asr.model_path and not Path(settings.asr.model_path).exists():
+                settings.asr.model_path = None
+        elif settings.asr.model_type == "sherpa-onnx":
+            settings.asr.model_name = asr_model_value or "sherpa-onnx-zh-en-zipformer"
+            if asr_path_candidate and asr_path_candidate.exists():
+                settings.asr.model_path = asr_path_candidate
+            else:
+                local_sherpa = settings.models_dir / "asr" / asr_model_value
+                settings.asr.model_path = local_sherpa if local_sherpa.exists() else None
+        else:
+            settings.asr.model_name = None
+            if asr_path_candidate and asr_path_candidate.exists():
+                settings.asr.model_path = asr_path_candidate
+            elif settings.asr.model_type == "faster-whisper":
+                local_fw = settings.models_dir / "asr" / f"faster-whisper-{asr_model_value}"
+                settings.asr.model_path = local_fw if local_fw.exists() else None
+            elif settings.asr.model_type == "vosk":
+                local_vosk = settings.models_dir / "asr" / asr_model_value
+                settings.asr.model_path = local_vosk if local_vosk.exists() else None
+            else:
+                settings.asr.model_path = None
 
         settings.mt.model_type = self.mt_backend_combo.currentData()
         mt_model = self.mt_model_name_edit.text().strip()
@@ -672,17 +847,48 @@ class MainWindow(QMainWindow):
             if not self._ensure_selected_models_ready(show_dialog=False):
                 raise RuntimeError("所选模型下载或配置失败，请检查网络与依赖后重试")
 
+        profile = self.runtime_profile_combo.currentData() or "realtime"
+        asr_buffer = float(self.asr_buffer_spin.value())
+        tuning = self._runtime_profile_tuning(profile, asr_buffer)
+        direct_asr_translate = bool(self.direct_asr_translate_checkbox.isChecked())
+        if direct_asr_translate and settings.asr.model_type not in {"whisper", "faster-whisper"}:
+            logger.warning("ASR直译仅支持 whisper/faster-whisper，自动关闭")
+            direct_asr_translate = False
+        if direct_asr_translate and (self.target_lang_combo.currentData() or "").lower() != "en":
+            logger.warning("ASR直译当前仅支持目标英语，自动关闭")
+            direct_asr_translate = False
+
+        settings.asr.task = "translate" if direct_asr_translate else "transcribe"
+        settings.asr.beam_size = int(tuning["asr_beam_size"])
+        settings.asr.vad_filter = bool(tuning["asr_backend_vad_filter"])
+
         realtime_config = RealtimeConfig(
             source_lang=self.source_lang_combo.currentData(),
             target_lang=self.target_lang_combo.currentData(),
             enable_tts=self.tts_checkbox.isChecked(),
+            direct_asr_translate=direct_asr_translate,
             output_to_virtual_device=self.output_virtual_checkbox.isChecked(),
-            asr_buffer_duration=float(self.asr_buffer_spin.value()),
+            asr_buffer_duration=asr_buffer,
             asr_overlap=float(self.asr_overlap_spin.value()),
             max_translation_queue=int(self.max_queue_spin.value()),
+            stream_profile=profile,
+            stream_flush_interval=float(tuning["stream_flush_interval"]),
+            stream_min_chars=int(tuning["stream_min_chars"]),
+            stream_max_chars=int(tuning["stream_max_chars"]),
+            stream_agreement=int(tuning["stream_agreement"]),
+            translation_batch_chars=int(tuning["translation_batch_chars"]),
+            tts_merge_chars=int(tuning["tts_merge_chars"]),
+            asr_vad_enabled=bool(tuning["asr_vad_enabled"]),
+            asr_vad_energy_threshold=float(tuning["asr_vad_energy_threshold"]),
+            asr_vad_silence_duration=float(tuning["asr_vad_silence_duration"]),
+            asr_min_buffer_duration=float(tuning["asr_min_buffer_duration"]),
+            asr_max_buffer_duration=float(tuning["asr_max_buffer_duration"]),
+            min_asr_confidence=float(tuning["min_asr_confidence"]),
+            min_cjk_ratio=float(tuning["min_cjk_ratio"]),
+            drop_hallucination=bool(tuning["drop_hallucination"]),
             input_device_id=self.input_device_combo.currentData(),
         )
-        self.statusBar().showMessage("配置已应用", 2500)
+        self.statusBar().showMessage(f"配置已应用（{profile}）", 2500)
         return realtime_config
 
     def _toggle_translation(self) -> None:

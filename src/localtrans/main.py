@@ -15,6 +15,22 @@ from localtrans.pipeline import RealtimePipeline, create_pipeline
 from localtrans.audio import VirtualAudioDevice
 
 
+def _percentile(values: list[float], q: float) -> float:
+    """计算百分位，空数组返回0"""
+    if not values:
+        return 0.0
+    try:
+        import numpy as np
+
+        return float(np.percentile(values, q))
+    except Exception:
+        # 轻量回退：无numpy时使用排序近似
+        ordered = sorted(values)
+        idx = int(round((q / 100.0) * (len(ordered) - 1)))
+        idx = max(0, min(idx, len(ordered) - 1))
+        return float(ordered[idx])
+
+
 def setup_logging(debug: bool = False) -> None:
     """配置日志"""
     log_level = "DEBUG" if debug else "INFO"
@@ -120,18 +136,45 @@ def run_interactive(
     source_lang: str = "zh",
     target_lang: str = "en",
     enable_tts: bool = True,
+    stream_profile: str = "realtime",
+    direct_asr_translate: bool = False,
 ) -> None:
     """运行交互式翻译"""
     
     print(f"源语言: {source_lang}")
     print(f"目标语言: {target_lang}")
     print(f"语音合成: {'启用' if enable_tts else '禁用'}")
+    print(f"运行模式: {stream_profile}")
+    print(f"ASR直译: {'启用' if direct_asr_translate else '禁用'}")
     print()
+
+    profile = (stream_profile or "realtime").lower()
+    if profile == "quality":
+        settings.asr.beam_size = max(3, int(settings.asr.beam_size))
+        settings.asr.vad_filter = True
+    elif profile == "balanced":
+        settings.asr.beam_size = max(2, int(settings.asr.beam_size))
+        settings.asr.vad_filter = True
+    else:
+        settings.asr.beam_size = 1
+        settings.asr.vad_filter = False
+
+    if direct_asr_translate:
+        if settings.asr.model_type not in {"whisper", "faster-whisper"}:
+            logger.warning("ASR直译仅支持 whisper/faster-whisper，已自动关闭")
+            direct_asr_translate = False
+        if (target_lang or "").lower() != "en":
+            logger.warning("ASR直译当前仅支持目标语言英语，已自动关闭")
+            direct_asr_translate = False
+
+    settings.asr.task = "translate" if direct_asr_translate else "transcribe"
     
     pipeline = create_pipeline(
         source_lang=source_lang,
         target_lang=target_lang,
         enable_tts=enable_tts,
+        stream_profile=profile,
+        direct_asr_translate=direct_asr_translate,
     )
     
     def signal_handler(sig, frame):
@@ -170,6 +213,143 @@ def run_interactive(
         print("\n[OK] 翻译已停止")
 
 
+def benchmark_latency(
+    source_lang: str = "zh",
+    target_lang: str = "en",
+    text: str = "这是一次实时翻译延迟测试。",
+    iterations: int = 30,
+    warmup: int = 5,
+    include_tts: bool = True,
+    audio_file: Optional[str] = None,
+) -> int:
+    """基准测试：输出 MT/TTS/总链路延迟 P50/P95"""
+    import time
+    import numpy as np
+
+    from localtrans.asr import ASREngine
+    from localtrans.mt import MTEngine
+    from localtrans.tts import TTSEngine
+
+    if iterations <= 0:
+        print("[ERROR] --iterations 必须大于0")
+        return 1
+    if warmup < 0:
+        print("[ERROR] --warmup 不能小于0")
+        return 1
+
+    asr_engine = None
+    asr_audio = None
+    if audio_file:
+        try:
+            import soundfile as sf
+
+            raw_audio, sample_rate = sf.read(audio_file, dtype="float32")
+            if raw_audio.ndim > 1:
+                raw_audio = np.mean(raw_audio, axis=1)
+            asr_audio = np.asarray(raw_audio, dtype=np.float32)
+            print(f"[OK] 已加载音频: {audio_file} ({len(asr_audio) / float(sample_rate):.2f}s)")
+            asr_engine = ASREngine()
+        except Exception as exc:
+            print(f"[ERROR] 读取音频失败: {exc}")
+            return 1
+
+    mt_engine = MTEngine()
+    tts_engine = TTSEngine() if include_tts else None
+
+    asr_backend = asr_engine._backend.__class__.__name__ if asr_engine else "N/A"
+    mt_backend = mt_engine._backend.__class__.__name__
+    tts_backend = tts_engine._backend.__class__.__name__ if tts_engine else "N/A"
+
+    print("\n基准测试配置:")
+    print("-" * 50)
+    print(f"source -> target : {source_lang} -> {target_lang}")
+    print(f"iterations/warmup: {iterations}/{warmup}")
+    print(f"ASR backend      : {asr_backend}")
+    print(f"MT backend       : {mt_backend}")
+    print(f"TTS backend      : {tts_backend}")
+    print(f"audio_file       : {audio_file or 'N/A (text-only)'}")
+    print("-" * 50)
+
+    asr_latencies: list[float] = []
+    mt_latencies: list[float] = []
+    tts_latencies: list[float] = []
+    total_latencies: list[float] = []
+
+    preview_source = ""
+    preview_translation = ""
+
+    total_rounds = warmup + iterations
+    for idx in range(total_rounds):
+        iter_start = time.perf_counter()
+        source_text = text
+        asr_ms = 0.0
+
+        if asr_engine is not None and asr_audio is not None:
+            asr_start = time.perf_counter()
+            asr_result = asr_engine.transcribe(asr_audio)
+            asr_ms = (time.perf_counter() - asr_start) * 1000.0
+            if asr_result.text.strip():
+                source_text = asr_result.text.strip()
+
+        mt_start = time.perf_counter()
+        mt_result = mt_engine.translate(
+            source_text,
+            source_lang=source_lang,
+            target_lang=target_lang,
+        )
+        mt_ms = (time.perf_counter() - mt_start) * 1000.0
+
+        tts_ms = 0.0
+        if tts_engine is not None:
+            tts_start = time.perf_counter()
+            _ = tts_engine.synthesize(mt_result.translated_text)
+            tts_ms = (time.perf_counter() - tts_start) * 1000.0
+
+        total_ms = (time.perf_counter() - iter_start) * 1000.0
+
+        if idx >= warmup:
+            asr_latencies.append(asr_ms)
+            mt_latencies.append(mt_ms)
+            tts_latencies.append(tts_ms)
+            total_latencies.append(total_ms)
+
+            if not preview_source:
+                preview_source = source_text
+                preview_translation = mt_result.translated_text
+
+    def _line(name: str, values: list[float]) -> str:
+        if not values:
+            return f"{name:<8}  p50=0.0ms  p95=0.0ms  avg=0.0ms"
+        avg = sum(values) / len(values)
+        return (
+            f"{name:<8}  p50={_percentile(values, 50):>6.1f}ms  "
+            f"p95={_percentile(values, 95):>6.1f}ms  avg={avg:>6.1f}ms"
+        )
+
+    print("\n延迟统计:")
+    print("-" * 50)
+    if asr_engine is not None:
+        print(_line("ASR", asr_latencies))
+    print(_line("MT", mt_latencies))
+    if tts_engine is not None:
+        print(_line("TTS", tts_latencies))
+    print(_line("TOTAL", total_latencies))
+    print("-" * 50)
+
+    if preview_source or preview_translation:
+        print("\n样例输出:")
+        print(f"[源] {preview_source}")
+        print(f"[译] {preview_translation}")
+
+    if tts_engine is not None:
+        try:
+            tts_engine.close()
+        except Exception:
+            pass
+
+    return 0
+
+
 def main() -> int:
     """主函数"""
     import argparse
@@ -188,6 +368,17 @@ def main() -> int:
     run_parser.add_argument("-s", "--source", default="zh", help="源语言 (默认: zh)")
     run_parser.add_argument("-t", "--target", default="en", help="目标语言 (默认: en)")
     run_parser.add_argument("--no-tts", action="store_true", help="禁用语音合成")
+    run_parser.add_argument(
+        "--profile",
+        default="realtime",
+        choices=["realtime", "balanced", "quality"],
+        help="实时链路档位 (默认: realtime)",
+    )
+    run_parser.add_argument(
+        "--asr-direct-translate",
+        action="store_true",
+        help="启用Whisper ASR直译（中->英，跳过MT）",
+    )
     
     subparsers.add_parser("devices", help="列出音频设备")
     subparsers.add_parser("check", help="检查系统环境")
@@ -196,6 +387,15 @@ def main() -> int:
     download_parser = subparsers.add_parser("download", help="下载模型")
     download_parser.add_argument("model", help="模型名称")
     download_parser.add_argument("-f", "--force", action="store_true", help="强制重新下载")
+
+    bench_parser = subparsers.add_parser("benchmark", help="延迟基准测试")
+    bench_parser.add_argument("-s", "--source", default="zh", help="源语言 (默认: zh)")
+    bench_parser.add_argument("-t", "--target", default="en", help="目标语言 (默认: en)")
+    bench_parser.add_argument("--text", default="这是一次实时翻译延迟测试。", help="文本模式测试输入")
+    bench_parser.add_argument("--iterations", type=int, default=30, help="统计轮数")
+    bench_parser.add_argument("--warmup", type=int, default=5, help="预热轮数")
+    bench_parser.add_argument("--no-tts", action="store_true", help="基准中禁用TTS阶段")
+    bench_parser.add_argument("--audio-file", help="可选WAV/音频文件，提供后将包含ASR阶段")
     
     args = parser.parse_args()
     
@@ -207,6 +407,8 @@ def main() -> int:
             source_lang=args.source,
             target_lang=args.target,
             enable_tts=not args.no_tts,
+            stream_profile=args.profile,
+            direct_asr_translate=args.asr_direct_translate,
         )
     elif args.command == "devices":
         show_devices()
@@ -216,6 +418,16 @@ def main() -> int:
         show_models()
     elif args.command == "download":
         download_model(args.model, args.force)
+    elif args.command == "benchmark":
+        return benchmark_latency(
+            source_lang=args.source,
+            target_lang=args.target,
+            text=args.text,
+            iterations=args.iterations,
+            warmup=args.warmup,
+            include_tts=not args.no_tts,
+            audio_file=args.audio_file,
+        )
     else:
         parser.print_help()
     

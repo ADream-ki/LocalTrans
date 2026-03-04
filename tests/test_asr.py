@@ -33,6 +33,8 @@ class TestASREngine:
         """测试后端类型"""
         assert "faster-whisper" in ASREngine.BACKENDS
         assert "whisper" in ASREngine.BACKENDS
+        assert "funasr" in ASREngine.BACKENDS
+        assert "sherpa-onnx" in ASREngine.BACKENDS
     
     @patch('localtrans.asr.engine.FasterWhisperBackend')
     def test_engine_init(self, mock_backend):
@@ -100,3 +102,47 @@ class TestStreamingASR:
         assert len(call_lengths) >= 3
         # 正常推进时每次处理片段长度应保持在小窗口范围，不会线性失控增长
         assert max(call_lengths) < 16000
+
+    def test_vad_skips_silence_before_speech(self):
+        """VAD开启时，纯静音不应触发ASR调用"""
+        class CountingEngine:
+            def __init__(self):
+                self.calls = 0
+
+            def transcribe(self, audio):
+                self.calls += 1
+                return TranscriptionResult(
+                    text="测试",
+                    language="zh",
+                    confidence=1.0,
+                    start_time=0.0,
+                    end_time=len(audio) / 16000.0,
+                )
+
+        engine = CountingEngine()
+        streaming = StreamingASR(
+            asr_engine=engine,
+            buffer_duration=0.2,
+            overlap_duration=0.0,
+            min_buffer_duration=0.1,
+            max_buffer_duration=0.2,
+            vad_enabled=True,
+            vad_energy_threshold=0.05,
+            vad_silence_duration=0.05,
+        )
+        streaming.start()
+        try:
+            silence = np.zeros(800, dtype=np.int16)
+            for _ in range(6):
+                streaming.put_audio(silence)
+                time.sleep(0.01)
+            time.sleep(0.1)
+            assert engine.calls == 0
+
+            speech = np.full(2000, 22000, dtype=np.int16)
+            streaming.put_audio(speech)
+            streaming.put_audio(speech)
+            time.sleep(0.2)
+            assert engine.calls >= 1
+        finally:
+            streaming.stop()

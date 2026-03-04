@@ -10,8 +10,8 @@ from pydantic import BaseModel, Field
 
 class LanguagePair(BaseModel):
     """语言对配置"""
-    source: str = Field(default="en", description="源语言代码")
-    target: str = Field(default="zh", description="目标语言代码")
+    source: str = Field(default="zh", description="源语言代码")
+    target: str = Field(default="en", description="目标语言代码")
     
     class Config:
         frozen = True
@@ -35,8 +35,12 @@ class AudioConfig(BaseModel):
 class ASRConfig(BaseModel):
     """ASR语音识别配置"""
     # 模型配置
-    model_type: str = Field(default="vosk", description="模型类型: vosk, whisper, faster-whisper")
+    model_type: str = Field(
+        default="vosk",
+        description="模型类型: vosk, whisper, faster-whisper, funasr, sherpa-onnx",
+    )
     model_size: str = Field(default="base", description="模型大小: tiny, base, small, medium, large")
+    model_name: Optional[str] = Field(default=None, description="模型名称（可覆盖model_size）")
     model_path: Optional[Path] = Field(default=None, description="本地模型路径")
     
     # 识别配置

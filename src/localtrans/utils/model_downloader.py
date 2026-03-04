@@ -57,11 +57,53 @@ class ModelDownloader:
             source="openai",
             size_mb=500,
         ),
+        "whisper-turbo": ModelInfo(
+            name="whisper-turbo",
+            type="asr",
+            source="openai",
+            size_mb=809,
+        ),
         "faster-whisper-base": ModelInfo(
             name="faster-whisper-base",
             type="asr",
             source="huggingface",
             url="Systran/faster-whisper-base",
+        ),
+        "faster-whisper-small": ModelInfo(
+            name="faster-whisper-small",
+            type="asr",
+            source="huggingface",
+            url="Systran/faster-whisper-small",
+        ),
+        "faster-whisper-medium": ModelInfo(
+            name="faster-whisper-medium",
+            type="asr",
+            source="huggingface",
+            url="Systran/faster-whisper-medium",
+        ),
+        "faster-whisper-large-v3": ModelInfo(
+            name="faster-whisper-large-v3",
+            type="asr",
+            source="huggingface",
+            url="Systran/faster-whisper-large-v3",
+        ),
+        "faster-whisper-distil-large-v3": ModelInfo(
+            name="faster-whisper-distil-large-v3",
+            type="asr",
+            source="huggingface",
+            url="Systran/faster-distil-whisper-large-v3",
+        ),
+        "funasr-sensevoice-small": ModelInfo(
+            name="funasr-sensevoice-small",
+            type="asr",
+            source="huggingface",
+            url="iic/SenseVoiceSmall",
+        ),
+        "sherpa-onnx-zh-en-zipformer": ModelInfo(
+            name="sherpa-onnx-zh-en-zipformer",
+            type="asr",
+            source="huggingface",
+            url="k2-fsa/sherpa-onnx-streaming-zipformer-bilingual-zh-en-2023-02-20",
         ),
         "vosk-model-small-en-us-0.15": ModelInfo(
             name="vosk-model-small-en-us-0.15",
@@ -69,6 +111,13 @@ class ModelDownloader:
             source="direct",
             url="https://alphacephei.com/vosk/models/vosk-model-small-en-us-0.15.zip",
             size_mb=40,
+        ),
+        "vosk-model-small-cn-0.22": ModelInfo(
+            name="vosk-model-small-cn-0.22",
+            type="asr",
+            source="direct",
+            url="https://alphacephei.com/vosk/models/vosk-model-small-cn-0.22.zip",
+            size_mb=42,
         ),
         
         # MT模型
