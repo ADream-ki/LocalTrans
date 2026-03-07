@@ -5,6 +5,7 @@
 
 import threading
 import queue
+import time
 from typing import Callable, Optional, Generator
 from dataclasses import dataclass
 from enum import Enum
@@ -70,6 +71,10 @@ class StreamingASR:
         self._result_queue: queue.Queue[TranscriptionResult] = queue.Queue(maxsize=100)
         self._state = StreamState.IDLE
         self._worker_thread: Optional[threading.Thread] = None
+        self._last_queue_overflow_log_ts = 0.0
+        self._overflow_drop_count = 0
+        self._queue_high_watermark = int(self._audio_queue.maxsize * 0.7)
+        self._queue_recover_target = max(8, int(self._audio_queue.maxsize * 0.25))
         
         # 音频缓冲
         self._sample_rate = settings.audio.sample_rate
@@ -94,7 +99,19 @@ class StreamingASR:
         try:
             self._audio_queue.put_nowait(AudioBuffer(data=audio_data, timestamp=timestamp))
         except queue.Full:
-            logger.warning("音频队列已满，丢弃数据")
+            # 丢弃最旧数据并保留最新音频，优先保证实时性。
+            try:
+                self._audio_queue.get_nowait()
+                self._audio_queue.put_nowait(AudioBuffer(data=audio_data, timestamp=timestamp))
+            except queue.Empty:
+                pass
+
+            self._overflow_drop_count += 1
+            now = time.time()
+            if now - self._last_queue_overflow_log_ts >= 2.0:
+                logger.warning(f"音频队列拥塞，最近丢弃{self._overflow_drop_count}个音频块")
+                self._overflow_drop_count = 0
+                self._last_queue_overflow_log_ts = now
 
     @staticmethod
     def _flatten_audio(audio_data: np.ndarray) -> np.ndarray:
@@ -129,6 +146,31 @@ class StreamingASR:
                 self._result_queue.put_nowait(result)
             except queue.Empty:
                 pass
+
+    def _trim_audio_queue_if_needed(self) -> None:
+        """队列积压时快速丢弃旧块，仅保留最新音频，避免全链路失去实时性。"""
+        qsize = self._audio_queue.qsize()
+        if qsize < self._queue_high_watermark:
+            return
+
+        drop_target = max(0, qsize - self._queue_recover_target)
+        dropped = 0
+        for _ in range(drop_target):
+            try:
+                self._audio_queue.get_nowait()
+                dropped += 1
+            except queue.Empty:
+                break
+
+        if dropped <= 0:
+            return
+
+        now = time.time()
+        if now - self._last_queue_overflow_log_ts >= 1.5:
+            logger.warning(
+                f"ASR处理滞后，快速丢弃{dropped}个旧音频块(qsize={qsize} -> {self._audio_queue.qsize()})"
+            )
+            self._last_queue_overflow_log_ts = now
     
     def _process_loop(self) -> None:
         """处理循环"""
@@ -177,6 +219,7 @@ class StreamingASR:
         
         while self._state == StreamState.RUNNING:
             try:
+                self._trim_audio_queue_if_needed()
                 # 获取音频块
                 audio_buffer = self._audio_queue.get(timeout=0.1)
                 chunk = self._flatten_audio(audio_buffer.data)

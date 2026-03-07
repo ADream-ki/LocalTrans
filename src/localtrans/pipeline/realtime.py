@@ -133,7 +133,21 @@ class RealtimePipeline:
     _SOFT_BREAK_CHARS = "，,、 "
     _HALLUCINATION_PHRASES = (
         "字幕by",
+        "字幕 by",
+        "字幕制作",
+        "字幕製作",
+        "字幕组",
+        "字幕組",
+        "字幕提供",
+        "字幕製作人",
+        "字幕制作人",
         "感谢观看",
+        "谢谢观看",
+        "謝謝觀看",
+        "谢谢大家收看",
+        "謝謝大家收看",
+        "thanks for watching",
+        "thank you for watching",
         "请点赞",
         "记得点赞",
         "记得订阅",
@@ -141,6 +155,13 @@ class RealtimePipeline:
         "欢迎订阅",
         "下次再见",
         "关注我们",
+    )
+    _AUTO_INPUT_PATTERNS = (
+        "cable output",
+        "vb-audio virtual",
+        "vb-audio point",
+        "stereo mix",
+        "立体声混音",
     )
     
     def __init__(
@@ -243,10 +264,20 @@ class RealtimePipeline:
                     cleaned = cleaned.replace(phrase.upper(), "")
                     cleaned = cleaned.replace(phrase.capitalize(), "")
                 cleaned = self._normalize_text(cleaned)
-                if had_hallucination and len(cleaned) <= max(10, int(self.config.stream_max_chars)):
+                if had_hallucination and len(cleaned) <= max(28, int(self.config.stream_max_chars) * 2):
                     return ""
                 if not cleaned:
                     return ""
+
+            # 更激进过滤字幕/片尾类幻听文本，避免污染后续翻译。
+            subtitle_like = (
+                "字幕" in cleaned
+                or "收看" in cleaned
+                or "下次再见" in cleaned
+                or "下次再見" in cleaned
+            )
+            if subtitle_like and len(cleaned) <= max(32, int(self.config.stream_max_chars) * 3):
+                return ""
 
         cleaned = self._squash_repeated_tokens(cleaned)
         if not cleaned:
@@ -577,6 +608,27 @@ class RealtimePipeline:
             
         except Exception as e:
             logger.error(f"合成/播放错误: {e}")
+
+    def _resolve_auto_input_device_id(self) -> Optional[int]:
+        """在未显式指定输入设备时自动选择更适合会议转写的设备。"""
+        if self.config.input_device_id is not None:
+            return self.config.input_device_id
+
+        try:
+            capturer = AudioCapturer()
+            devices = capturer.list_devices()
+        except Exception as exc:
+            logger.warning(f"自动探测输入设备失败: {exc}")
+            return None
+
+        for pattern in self._AUTO_INPUT_PATTERNS:
+            for dev in devices:
+                name = str(dev.get("name", "")).lower()
+                if pattern in name:
+                    dev_id = int(dev.get("id"))
+                    logger.info(f"自动选择输入设备: [{dev_id}] {dev.get('name')}")
+                    return dev_id
+        return None
     
     def initialize(self) -> bool:
         """初始化所有组件"""
@@ -591,6 +643,9 @@ class RealtimePipeline:
                     self._virtual_device = None
             
             # 初始化音频捕获
+            resolved_input_device = self._resolve_auto_input_device_id()
+            if resolved_input_device is not None:
+                self.config.input_device_id = resolved_input_device
             self._audio_capturer = AudioCapturer(
                 device_id=self.config.input_device_id,
                 device_name=self.config.input_device_name,

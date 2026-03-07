@@ -99,6 +99,14 @@ class FasterWhisperBackend(ASRBackend):
     def _load_model(self):
         """加载模型"""
         try:
+            # ctranslate2.__init__ 会导入 converters，进而触发 transformers/torch。
+            # 在 PyInstaller onefile 中 faster-whisper 仅需要推理路径，提前注入占位模块
+            # 可避免 converters 链路带来的 _C 导入问题。
+            import sys
+            import types
+            if getattr(sys, "frozen", False) and "ctranslate2.converters" not in sys.modules:
+                sys.modules["ctranslate2.converters"] = types.ModuleType("ctranslate2.converters")
+
             from faster_whisper import WhisperModel
             
             device = self.config.device
@@ -154,18 +162,35 @@ class FasterWhisperBackend(ASRBackend):
         start_time = time.time()
 
         prepared_audio = self._prepare_audio(audio)
-        
-        segments, info = self._model.transcribe(
-            prepared_audio,
-            language=self.config.language,
-            task=self.config.task,
-            beam_size=self.config.beam_size,
-            vad_filter=self.config.vad_filter,
-            word_timestamps=self.config.word_timestamps,
-            without_timestamps=not self.config.word_timestamps,
-            condition_on_previous_text=False,
-            **kwargs
-        )
+
+        transcribe_kwargs = {
+            "language": self.config.language,
+            "task": self.config.task,
+            "beam_size": self.config.beam_size,
+            "vad_filter": self.config.vad_filter,
+            "word_timestamps": self.config.word_timestamps,
+            "without_timestamps": not self.config.word_timestamps,
+            "condition_on_previous_text": False,
+        }
+        transcribe_kwargs.update(kwargs)
+
+        try:
+            segments, info = self._model.transcribe(prepared_audio, **transcribe_kwargs)
+        except Exception as exc:
+            err_msg = str(exc)
+            missing_vad_asset = (
+                bool(transcribe_kwargs.get("vad_filter"))
+                and (
+                    "silero_vad.onnx" in err_msg
+                    or ("NO_SUCHFILE" in err_msg and "vad" in err_msg.lower())
+                )
+            )
+            if not missing_vad_asset:
+                raise
+
+            logger.warning("检测到silero_vad资源缺失，自动关闭vad_filter后重试一次")
+            transcribe_kwargs["vad_filter"] = False
+            segments, info = self._model.transcribe(prepared_audio, **transcribe_kwargs)
         
         # 合并所有片段
         text_parts = []
@@ -724,15 +749,23 @@ class VoskBackend(ASRBackend):
         self._load_model()
 
     def _resolve_model_path(self) -> Path:
+        def _is_valid_vosk_model_dir(path: Path) -> bool:
+            if not path.exists() or not path.is_dir():
+                return False
+            # Vosk模型目录通常包含 am/conf 等关键子目录
+            return (path / "am").exists() and (path / "conf").exists()
+
         if self.config.model_path:
-            return Path(self.config.model_path)
+            model_path = Path(self.config.model_path)
+            if _is_valid_vosk_model_dir(model_path):
+                return model_path
         models_dir = settings.models_dir / "asr"
 
         # 若 model_size 直接给出 vosk 模型目录名，优先使用
         model_size = (self.config.model_size or "").strip()
         if model_size.startswith("vosk-model-"):
             named_path = models_dir / model_size
-            if named_path.exists():
+            if _is_valid_vosk_model_dir(named_path):
                 return named_path
 
         lang = (self.config.language or "").lower()
@@ -754,7 +787,7 @@ class VoskBackend(ASRBackend):
             ]
 
         for path in candidates:
-            if path.exists():
+            if _is_valid_vosk_model_dir(path):
                 return path
 
         # 默认模型路径（可由下载器提前准备）
@@ -873,20 +906,36 @@ class ASREngine:
             self._backend = backend_class(self.config)
             logger.info(f"ASR引擎初始化完成: {self.config.model_type}")
         except Exception as exc:
-            logger.warning(f"ASR后端加载失败({self.config.model_type}): {exc}")
+            logger.exception(f"ASR后端加载失败({self.config.model_type}): {exc}")
 
-            # 运行时兜底：优先回退到 Vosk，避免进入占位 fallback-asr
+            # 运行时兜底：优先尝试 faster-whisper，避免直接降级到低精度 vosk
+            fallback_candidates: list[tuple[str, str]] = []
+            if self.config.model_type != "faster-whisper":
+                fallback_candidates.extend(
+                    [
+                        ("faster-whisper", "small"),
+                        ("faster-whisper", "base"),
+                    ]
+                )
             if self.config.model_type != "vosk":
+                fallback_candidates.append(("vosk", "vosk-model-small-cn-0.22"))
+
+            for model_type, model_size in fallback_candidates:
                 try:
                     fallback_cfg = self.config.model_copy(deep=True)
-                    fallback_cfg.model_type = "vosk"
+                    fallback_cfg.model_type = model_type
+                    fallback_cfg.model_size = model_size
                     fallback_cfg.model_name = None
                     fallback_cfg.model_path = None
-                    self._backend = VoskBackend(fallback_cfg)
-                    logger.warning("ASR已自动回退到 vosk 后端")
+
+                    backend_cls = self.BACKENDS.get(model_type)
+                    if backend_cls is None:
+                        continue
+                    self._backend = backend_cls(fallback_cfg)
+                    logger.warning(f"ASR已自动回退到 {model_type}/{model_size} 后端")
                     return
                 except Exception as fallback_exc:
-                    logger.warning(f"ASR回退到vosk失败: {fallback_exc}")
+                    logger.warning(f"ASR回退到{model_type}/{model_size}失败: {fallback_exc}")
 
             # 缺少依赖/模型时，最终降级到可运行占位后端
             self._backend = FallbackASRBackend(self.config, reason=str(exc))

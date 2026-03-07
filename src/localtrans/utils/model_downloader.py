@@ -9,6 +9,7 @@ import hashlib
 import json
 import zipfile
 import time
+import shutil
 from pathlib import Path
 from typing import Dict, Optional, List
 from dataclasses import dataclass
@@ -266,42 +267,86 @@ class ModelDownloader:
         progress_callback: Optional[callable],
     ) -> Path:
         """从Hugging Face下载"""
-        try:
-            from huggingface_hub import snapshot_download, hf_hub_download
-            
-            target_dir.mkdir(parents=True, exist_ok=True)
-            
-            if model.files:
-                # 下载特定文件
-                repo_id = model.url
-                for file_path in model.files:
-                    logger.info(f"下载文件: {file_path}")
-                    hf_hub_download(
-                        repo_id=repo_id,
-                        filename=file_path,
-                        local_dir=target_dir,
-                        local_dir_use_symlinks=False,
-                    )
-            else:
-                # 下载整个仓库
-                snapshot_download(
-                    repo_id=model.url,
-                    local_dir=target_dir,
-                    local_dir_use_symlinks=False,
-                )
-            
-            # 更新缓存
+        def _mark_downloaded(path: Path) -> Path:
             self._cache[model.name] = {
                 "downloaded": True,
-                "path": str(target_dir),
+                "path": str(path),
             }
             self._save_cache()
-            
             logger.info(f"模型 {model.name} 下载完成")
-            return target_dir
-            
-        except ImportError:
-            raise ImportError("请安装huggingface_hub: pip install huggingface_hub")
+            return path
+
+        # faster-whisper 走专用下载链路，规避 snapshot 缓存不一致导致的失败
+        if model.name.startswith("faster-whisper-"):
+            try:
+                from faster_whisper.utils import download_model as fw_download_model
+            except ImportError as exc:
+                raise ImportError("请安装faster-whisper: pip install faster-whisper") from exc
+
+            target_dir.mkdir(parents=True, exist_ok=True)
+            size_or_id = model.url or model.name.replace("faster-whisper-", "", 1)
+            if isinstance(size_or_id, str) and size_or_id.startswith("Systran/faster-whisper-"):
+                size_or_id = size_or_id.replace("Systran/faster-whisper-", "", 1)
+
+            last_exc = None
+            for attempt in range(1, 4):
+                try:
+                    logger.info(f"下载faster-whisper模型({attempt}/3): {size_or_id}")
+                    downloaded = Path(
+                        fw_download_model(
+                            size_or_id=size_or_id,
+                            output_dir=str(target_dir),
+                            local_files_only=False,
+                        )
+                    )
+                    if downloaded != target_dir and downloaded.exists():
+                        if target_dir.exists():
+                            shutil.rmtree(target_dir, ignore_errors=True)
+                        shutil.copytree(downloaded, target_dir, dirs_exist_ok=True)
+                    return _mark_downloaded(target_dir)
+                except Exception as exc:
+                    last_exc = exc
+                    logger.warning(f"下载faster-whisper失败({attempt}/3): {exc}")
+                    if attempt < 3:
+                        time.sleep(attempt * 1.5)
+            raise RuntimeError(f"下载faster-whisper模型失败: {model.name}") from last_exc
+
+        try:
+            from huggingface_hub import snapshot_download, hf_hub_download
+        except ImportError as exc:
+            raise ImportError("请安装huggingface_hub: pip install huggingface_hub") from exc
+
+        target_dir.mkdir(parents=True, exist_ok=True)
+        last_exc = None
+        for attempt in range(1, 4):
+            try:
+                if model.files:
+                    repo_id = model.url
+                    for file_path in model.files:
+                        logger.info(f"下载文件({attempt}/3): {file_path}")
+                        hf_hub_download(
+                            repo_id=repo_id,
+                            filename=file_path,
+                            local_dir=target_dir,
+                            local_dir_use_symlinks=False,
+                            local_files_only=False,
+                        )
+                else:
+                    logger.info(f"下载仓库({attempt}/3): {model.url}")
+                    snapshot_download(
+                        repo_id=model.url,
+                        local_dir=target_dir,
+                        local_dir_use_symlinks=False,
+                        local_files_only=False,
+                    )
+                return _mark_downloaded(target_dir)
+            except Exception as exc:
+                last_exc = exc
+                logger.warning(f"HuggingFace下载失败({attempt}/3): {model.name} -> {exc}")
+                if attempt < 3:
+                    time.sleep(attempt * 1.5)
+
+        raise RuntimeError(f"下载模型失败: {model.name}") from last_exc
     
     def _download_whisper(
         self,
@@ -344,7 +389,7 @@ class ModelDownloader:
             raise ValueError(f"模型 {model.name} 缺少下载URL")
 
         target_dir.mkdir(parents=True, exist_ok=True)
-        zip_path = target_dir.with_suffix(".zip")
+        zip_path = target_dir.parent / f"{model.name}.zip"
 
         logger.info(f"下载模型文件: {model.url}")
         with requests.get(model.url, stream=True, timeout=60) as response:
@@ -535,7 +580,6 @@ class ModelDownloader:
             return False
         
         # 删除目录
-        import shutil
         shutil.rmtree(model_dir)
         
         # 更新缓存

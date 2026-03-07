@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import json
 import sys
+import traceback
+import importlib.util
 from pathlib import Path
 from typing import Optional
 
@@ -78,7 +80,10 @@ class MainWindow(QMainWindow):
         self.translation_signal.connect(self._append_result)
         self._load_device_list()
         self._load_downloadable_models()
-        self._load_gui_config(silent=True)
+        if self._config_path.exists():
+            self._load_gui_config(silent=True)
+        else:
+            self._apply_bootstrap_runtime_defaults()
         self._check_environment()
 
     def _init_ui(self) -> None:
@@ -187,10 +192,14 @@ class MainWindow(QMainWindow):
         self.asr_backend_combo = QComboBox()
         self.asr_backend_combo.addItem("vosk", "vosk")
         self.asr_backend_combo.addItem("faster-whisper", "faster-whisper")
-        self.asr_backend_combo.addItem("whisper", "whisper")
-        self.asr_backend_combo.addItem("funasr", "funasr")
-        self.asr_backend_combo.addItem("sherpa-onnx", "sherpa-onnx")
-        self._set_combo_data(self.asr_backend_combo, settings.asr.model_type)
+        if self._is_asr_backend_available("whisper"):
+            self.asr_backend_combo.addItem("whisper", "whisper")
+        if self._is_asr_backend_available("funasr"):
+            self.asr_backend_combo.addItem("funasr", "funasr")
+        if self._is_asr_backend_available("sherpa-onnx"):
+            self.asr_backend_combo.addItem("sherpa-onnx", "sherpa-onnx")
+        if not self._set_combo_data(self.asr_backend_combo, settings.asr.model_type):
+            self._set_combo_data(self.asr_backend_combo, "faster-whisper")
         model_form.addRow("ASR后端", self.asr_backend_combo)
 
         self.asr_model_combo = QComboBox()
@@ -330,6 +339,10 @@ class MainWindow(QMainWindow):
         self.fast_preset_btn.clicked.connect(self._apply_ultra_low_latency_preset)
         btn_row.addWidget(self.fast_preset_btn)
 
+        self.accuracy_preset_btn = QPushButton("高准确率预设")
+        self.accuracy_preset_btn.clicked.connect(self._apply_high_accuracy_preset)
+        btn_row.addWidget(self.accuracy_preset_btn)
+
         self.load_cfg_btn = QPushButton("加载配置")
         self.load_cfg_btn.clicked.connect(lambda: self._load_gui_config(silent=False))
         btn_row.addWidget(self.load_cfg_btn)
@@ -373,6 +386,67 @@ class MainWindow(QMainWindow):
         self.max_queue_spin.setValue(1)
 
         self.statusBar().showMessage("已应用极速(<1s)预设，建议直接点击开始翻译验证", 4000)
+
+    def _apply_high_accuracy_preset(self) -> None:
+        """一键应用高准确率预设（中->英）"""
+        self._set_combo_data(self.source_lang_combo, "zh")
+        self._set_combo_data(self.target_lang_combo, "en")
+        self.tts_checkbox.setChecked(True)
+
+        medium_dir = settings.models_dir / "asr" / "faster-whisper-medium"
+        model_size = "medium" if medium_dir.exists() else "small"
+        self._set_combo_data(self.asr_backend_combo, "faster-whisper")
+        self._set_combo_data(self.asr_model_combo, model_size)
+        self.direct_asr_translate_checkbox.setChecked(False)
+        self._set_combo_data(self.mt_backend_combo, "argos-ct2")
+        self.mt_model_name_edit.setText("argos-zh-en")
+        self._set_combo_data(self.tts_engine_combo, "piper")
+        self.tts_model_name_edit.setText("piper-en_US-lessac")
+
+        self._set_combo_data(self.asr_download_combo, f"faster-whisper-{model_size}")
+        self._set_combo_data(self.mt_download_combo, "argos-zh-en")
+        self._set_combo_data(self.tts_download_combo, "piper-en_US-lessac")
+        self.auto_download_checkbox.setChecked(True)
+
+        self.output_virtual_checkbox.setChecked(True)
+        self._set_combo_data(self.runtime_profile_combo, "quality")
+        self.asr_buffer_spin.setValue(0.85)
+        self.asr_overlap_spin.setValue(0.08)
+        self.max_queue_spin.setValue(2)
+
+        self.statusBar().showMessage("已应用高准确率预设（建议首次先测试30秒）", 4000)
+
+    def _apply_bootstrap_runtime_defaults(self) -> None:
+        """首次启动（无保存配置）时使用可落地的默认策略。"""
+        self._set_combo_data(self.source_lang_combo, "zh")
+        self._set_combo_data(self.target_lang_combo, "en")
+        self.tts_checkbox.setChecked(True)
+        self.direct_asr_translate_checkbox.setChecked(False)
+
+        fw_small_dir = settings.models_dir / "asr" / "faster-whisper-small"
+        vosk_cn_dir = settings.models_dir / "asr" / "vosk-model-small-cn-0.22"
+        if fw_small_dir.exists():
+            self._set_combo_data(self.asr_backend_combo, "faster-whisper")
+            self._set_combo_data(self.asr_model_combo, "small")
+            self._set_combo_data(self.asr_download_combo, "faster-whisper-small")
+        elif vosk_cn_dir.exists():
+            self._set_combo_data(self.asr_backend_combo, "vosk")
+            self._set_combo_data(self.asr_model_combo, "vosk-model-small-cn-0.22")
+            self._set_combo_data(self.asr_download_combo, "vosk-model-small-cn-0.22")
+
+        self._set_combo_data(self.mt_backend_combo, "argos-ct2")
+        self.mt_model_name_edit.setText("argos-zh-en")
+        self._set_combo_data(self.mt_download_combo, "argos-zh-en")
+        self._set_combo_data(self.tts_engine_combo, "piper")
+        self.tts_model_name_edit.setText("piper-en_US-lessac")
+        self._set_combo_data(self.tts_download_combo, "piper-en_US-lessac")
+        self.auto_download_checkbox.setChecked(True)
+        self.output_virtual_checkbox.setChecked(True)
+        self._set_combo_data(self.runtime_profile_combo, "balanced")
+        self.asr_buffer_spin.setValue(0.65)
+        self.asr_overlap_spin.setValue(0.05)
+        self.max_queue_spin.setValue(2)
+        logger.info("未发现GUI配置文件，已应用启动默认配置(zh->en, balanced)")
 
     def _create_menu(self) -> None:
         """创建菜单"""
@@ -445,6 +519,28 @@ class MainWindow(QMainWindow):
         return False
 
     @staticmethod
+    def _module_available(module_name: str) -> bool:
+        try:
+            return importlib.util.find_spec(module_name) is not None
+        except Exception:
+            return False
+
+    def _is_asr_backend_available(self, backend: str) -> bool:
+        backend = (backend or "").lower()
+        if backend in {"vosk", "faster-whisper"}:
+            return True
+        if backend == "whisper":
+            # 打包版默认不包含 openai-whisper，避免用户误选后回退低精度后端
+            if getattr(sys, "frozen", False):
+                return False
+            return self._module_available("whisper")
+        if backend == "funasr":
+            return self._module_available("funasr")
+        if backend == "sherpa-onnx":
+            return self._module_available("sherpa_onnx")
+        return False
+
+    @staticmethod
     def _wrap_layout(layout: QHBoxLayout) -> QWidget:
         layout.setContentsMargins(0, 0, 0, 0)
         widget = QWidget()
@@ -473,6 +569,12 @@ class MainWindow(QMainWindow):
         self.tts_download_combo.addItem("不使用（保持当前）", "")
 
         for model in self._model_downloader.list_available("asr"):
+            if model.name.startswith("whisper-") and not self._is_asr_backend_available("whisper"):
+                continue
+            if model.name.startswith("funasr-") and not self._is_asr_backend_available("funasr"):
+                continue
+            if model.name.startswith("sherpa-onnx-") and not self._is_asr_backend_available("sherpa-onnx"):
+                continue
             self.asr_download_combo.addItem(self._model_label(model.name), model.name)
         for model in self._model_downloader.list_available("mt"):
             self.mt_download_combo.addItem(self._model_label(model.name), model.name)
@@ -503,8 +605,10 @@ class MainWindow(QMainWindow):
         if model_name.startswith("vosk-model"):
             settings.asr.model_type = "vosk"
             settings.asr.model_name = None
+            settings.asr.model_size = model_name
             settings.asr.model_path = model_path
             self._set_combo_data(self.asr_backend_combo, "vosk")
+            self._set_combo_data(self.asr_model_combo, model_name)
             return
 
         if model_name.startswith("whisper-"):
@@ -578,7 +682,8 @@ class MainWindow(QMainWindow):
             return True
 
         downloaded_or_ready: list[str] = []
-        failed: list[str] = []
+        failed: list[tuple[str, str]] = []
+        degraded: list[str] = []
 
         for model_name in selected:
             try:
@@ -593,17 +698,50 @@ class MainWindow(QMainWindow):
                 self._apply_downloaded_model_to_settings(model_name, model_path)
                 downloaded_or_ready.append(model_name)
             except Exception as exc:
-                failed.append(f"{model_name}: {exc}")
+                failed.append((model_name, str(exc)))
                 logger.error(f"模型准备失败 {model_name}: {exc}")
 
         self._load_downloadable_models()
 
-        if failed:
-            QMessageBox.warning(self, "模型准备失败", "\n".join(failed))
+        remaining_failed: list[str] = []
+        for model_name, reason in failed:
+            handled = False
+
+            # 高准确率常用链路：medium 下载失败时自动降级 small，避免阻断启动。
+            if (
+                model_name == "faster-whisper-medium"
+                and settings.asr.model_type == "faster-whisper"
+                and str(settings.asr.model_size).lower() == "medium"
+            ):
+                fw_small = settings.models_dir / "asr" / "faster-whisper-small"
+                if fw_small.exists():
+                    settings.asr.model_size = "small"
+                    settings.asr.model_path = fw_small
+                    self._set_combo_data(self.asr_backend_combo, "faster-whisper")
+                    self._set_combo_data(self.asr_model_combo, "small")
+                    self._set_combo_data(self.asr_download_combo, "faster-whisper-small")
+                    degraded.append("faster-whisper-medium -> faster-whisper-small")
+                    handled = True
+
+            if not handled:
+                remaining_failed.append(f"{model_name}: {reason}")
+
+        if remaining_failed:
+            if show_dialog:
+                QMessageBox.warning(self, "模型准备失败", "\n".join(remaining_failed))
             self.statusBar().showMessage("模型准备失败", 4000)
             return False
 
-        self.statusBar().showMessage("模型已自动下载并配置完成", 4000)
+        if degraded:
+            logger.warning(f"模型自动降级: {', '.join(degraded)}")
+            if show_dialog:
+                QMessageBox.information(self, "提示", "部分模型下载失败，已自动降级：\n" + "\n".join(degraded))
+            self.statusBar().showMessage("模型下载失败，已自动降级到可用模型", 4500)
+
+        if degraded:
+            self.statusBar().showMessage("模型部分下载失败，已自动降级并完成配置", 4500)
+        else:
+            self.statusBar().showMessage("模型已自动下载并配置完成", 4000)
         if show_dialog:
             QMessageBox.information(
                 self,
@@ -645,7 +783,7 @@ class MainWindow(QMainWindow):
     def _collect_gui_config(self) -> dict:
         """采集当前界面配置"""
         return {
-            "config_version": 3,
+            "config_version": 4,
             "source_lang": self.source_lang_combo.currentData(),
             "target_lang": self.target_lang_combo.currentData(),
             "enable_tts": self.tts_checkbox.isChecked(),
@@ -671,19 +809,33 @@ class MainWindow(QMainWindow):
     def _apply_gui_config(self, cfg: dict) -> None:
         """应用界面配置"""
         config_version = int(cfg.get("config_version", 1))
+        asr_backend = cfg.get("asr_backend", settings.asr.model_type)
+        asr_model_size = cfg.get("asr_model_size", "base")
+        asr_download_model = cfg.get("asr_download_model", "")
+
+        # v4之前默认偏向vosk，历史配置在部分机器会出现ASR队列拥塞；迁移到 faster-whisper-small。
+        if config_version < 4 and asr_backend == "vosk":
+            fw_small_dir = settings.models_dir / "asr" / "faster-whisper-small"
+            if fw_small_dir.exists():
+                asr_backend = "faster-whisper"
+                asr_model_size = "small"
+                if not asr_download_model or str(asr_download_model).startswith("vosk-model"):
+                    asr_download_model = "faster-whisper-small"
 
         self._set_combo_data(self.source_lang_combo, cfg.get("source_lang", "zh"))
         self._set_combo_data(self.target_lang_combo, cfg.get("target_lang", "en"))
         self.tts_checkbox.setChecked(bool(cfg.get("enable_tts", True)))
 
-        self._set_combo_data(self.asr_backend_combo, cfg.get("asr_backend", settings.asr.model_type))
-        self._set_combo_data(self.asr_model_combo, cfg.get("asr_model_size", "base"))
+        if not self._set_combo_data(self.asr_backend_combo, asr_backend):
+            fallback_backend = "faster-whisper" if self._is_asr_backend_available("faster-whisper") else "vosk"
+            self._set_combo_data(self.asr_backend_combo, fallback_backend)
+        self._set_combo_data(self.asr_model_combo, asr_model_size)
         self.direct_asr_translate_checkbox.setChecked(bool(cfg.get("direct_asr_translate", False)))
         self._set_combo_data(self.mt_backend_combo, cfg.get("mt_backend", settings.mt.model_type))
         self.mt_model_name_edit.setText(cfg.get("mt_model_name", settings.mt.model_name))
         self._set_combo_data(self.tts_engine_combo, cfg.get("tts_engine", settings.tts.engine))
         self.tts_model_name_edit.setText(cfg.get("tts_model_name", settings.tts.model_name or ""))
-        self._set_combo_data(self.asr_download_combo, cfg.get("asr_download_model", ""))
+        self._set_combo_data(self.asr_download_combo, asr_download_model)
         self._set_combo_data(self.mt_download_combo, cfg.get("mt_download_model", ""))
         self._set_combo_data(self.tts_download_combo, cfg.get("tts_download_model", ""))
         self.auto_download_checkbox.setChecked(bool(cfg.get("auto_download_models", True)))
@@ -755,21 +907,21 @@ class MainWindow(QMainWindow):
                 "drop_hallucination": True,
             }
         return {
-            "stream_flush_interval": 0.18,
-            "stream_min_chars": 2,
-            "stream_max_chars": 12,
+            "stream_flush_interval": 0.22,
+            "stream_min_chars": 3,
+            "stream_max_chars": 14,
             "stream_agreement": 1,
             "translation_batch_chars": 28,
             "tts_merge_chars": 80,
-            "asr_beam_size": 1,
-            "asr_backend_vad_filter": False,
+            "asr_beam_size": 2,
+            "asr_backend_vad_filter": True,
             "asr_vad_enabled": True,
-            "asr_vad_energy_threshold": 0.012,
-            "asr_vad_silence_duration": 0.16,
-            "asr_min_buffer_duration": max(0.22, asr_buffer_duration * 0.5),
-            "asr_max_buffer_duration": max(asr_buffer_duration, 0.5),
-            "min_asr_confidence": 0.08,
-            "min_cjk_ratio": 0.08,
+            "asr_vad_energy_threshold": 0.015,
+            "asr_vad_silence_duration": 0.2,
+            "asr_min_buffer_duration": max(0.32, asr_buffer_duration * 0.65),
+            "asr_max_buffer_duration": max(asr_buffer_duration, 0.7),
+            "min_asr_confidence": 0.14,
+            "min_cjk_ratio": 0.1,
             "drop_hallucination": True,
         }
 
@@ -803,8 +955,53 @@ class MainWindow(QMainWindow):
 
     def _apply_runtime_settings(self) -> RealtimeConfig:
         """把UI配置应用到运行时 settings，并返回流水线配置"""
+        source_lang = self.source_lang_combo.currentData()
         settings.asr.model_type = self.asr_backend_combo.currentData()
         asr_model_value = self.asr_model_combo.currentData() or self.asr_model_combo.currentText().strip()
+
+        if not self._is_asr_backend_available(settings.asr.model_type):
+            requested_backend = settings.asr.model_type
+            fallback_backend = "faster-whisper" if self._is_asr_backend_available("faster-whisper") else "vosk"
+            settings.asr.model_type = fallback_backend
+            self._set_combo_data(self.asr_backend_combo, fallback_backend)
+            if fallback_backend == "faster-whisper":
+                asr_model_value = "small"
+                self._set_combo_data(self.asr_model_combo, asr_model_value)
+                if self.auto_download_checkbox.isChecked() and not self.asr_download_combo.currentData():
+                    self._set_combo_data(self.asr_download_combo, "faster-whisper-small")
+            else:
+                src = (source_lang or "").lower()
+                asr_model_value = "vosk-model-small-cn-0.22" if src.startswith("zh") else "vosk-model-small-en-us-0.15"
+                self._set_combo_data(self.asr_model_combo, asr_model_value)
+                if self.auto_download_checkbox.isChecked():
+                    self._set_combo_data(self.asr_download_combo, asr_model_value)
+            logger.warning(f"ASR后端不可用({requested_backend})，已自动切换为 {fallback_backend}")
+            self.statusBar().showMessage(f"ASR后端 {requested_backend} 不可用，已切换为 {fallback_backend}", 4500)
+
+        if settings.asr.model_type == "vosk":
+            src = (source_lang or "").lower()
+            if src.startswith("zh"):
+                recommended_vosk_model = "vosk-model-small-cn-0.22"
+            elif src.startswith("en"):
+                recommended_vosk_model = "vosk-model-small-en-us-0.15"
+            else:
+                recommended_vosk_model = "vosk-model-small-en-us-0.15"
+
+            looks_like_path = (
+                bool(asr_model_value)
+                and ("\\" in asr_model_value or "/" in asr_model_value)
+            )
+            if not asr_model_value or asr_model_value in {"tiny", "base", "small", "medium", "large"}:
+                asr_model_value = recommended_vosk_model
+            elif (src.startswith("zh") and ("cn" not in asr_model_value and "zh" not in asr_model_value)) and not looks_like_path:
+                asr_model_value = recommended_vosk_model
+            elif (src.startswith("en") and "en" not in asr_model_value) and not looks_like_path:
+                asr_model_value = recommended_vosk_model
+
+            self._set_combo_data(self.asr_model_combo, asr_model_value)
+            if self.auto_download_checkbox.isChecked():
+                self._set_combo_data(self.asr_download_combo, asr_model_value)
+
         settings.asr.model_size = asr_model_value
         asr_path_candidate = Path(asr_model_value) if asr_model_value else None
         if settings.asr.model_type == "funasr":
@@ -845,7 +1042,8 @@ class MainWindow(QMainWindow):
 
         if self.auto_download_checkbox.isChecked():
             if not self._ensure_selected_models_ready(show_dialog=False):
-                raise RuntimeError("所选模型下载或配置失败，请检查网络与依赖后重试")
+                logger.warning("部分模型下载/配置失败，继续使用本地已安装模型启动")
+                self.statusBar().showMessage("部分模型下载失败，已使用本地可用模型继续", 4500)
 
         profile = self.runtime_profile_combo.currentData() or "realtime"
         asr_buffer = float(self.asr_buffer_spin.value())
@@ -863,7 +1061,7 @@ class MainWindow(QMainWindow):
         settings.asr.vad_filter = bool(tuning["asr_backend_vad_filter"])
 
         realtime_config = RealtimeConfig(
-            source_lang=self.source_lang_combo.currentData(),
+            source_lang=source_lang,
             target_lang=self.target_lang_combo.currentData(),
             enable_tts=self.tts_checkbox.isChecked(),
             direct_asr_translate=direct_asr_translate,
@@ -887,6 +1085,14 @@ class MainWindow(QMainWindow):
             min_cjk_ratio=float(tuning["min_cjk_ratio"]),
             drop_hallucination=bool(tuning["drop_hallucination"]),
             input_device_id=self.input_device_combo.currentData(),
+        )
+        logger.info(
+            "运行配置: "
+            f"src={realtime_config.source_lang}, tgt={realtime_config.target_lang}, "
+            f"asr={settings.asr.model_type}/{settings.asr.model_size}, asr_path={settings.asr.model_path}, "
+            f"mt={settings.mt.model_type}/{settings.mt.model_name}, "
+            f"tts={settings.tts.engine}/{settings.tts.model_name}, "
+            f"profile={realtime_config.stream_profile}, input_device={realtime_config.input_device_id}"
         )
         self.statusBar().showMessage(f"配置已应用（{profile}）", 2500)
         return realtime_config
@@ -1055,15 +1261,24 @@ def run_gui() -> None:
         retention="7 days",
         encoding="utf-8",
     )
-    app = QApplication(sys.argv)
-    app.setApplicationName("LocalTrans")
-    app.setApplicationVersion(__version__)
-    app.setStyle("Fusion")
+    try:
+        app = QApplication(sys.argv)
+        app.setApplicationName("LocalTrans")
+        app.setApplicationVersion(__version__)
+        app.setStyle("Fusion")
 
-    window = MainWindow()
-    window.show()
+        window = MainWindow()
+        window.show()
 
-    sys.exit(app.exec())
+        sys.exit(app.exec())
+    except Exception:
+        logger.exception("GUI启动失败")
+        fallback = settings.logs_dir / "localtrans_gui_bootstrap_error.log"
+        try:
+            fallback.write_text(traceback.format_exc(), encoding="utf-8")
+        except Exception:
+            pass
+        raise
 
 
 if __name__ == "__main__":

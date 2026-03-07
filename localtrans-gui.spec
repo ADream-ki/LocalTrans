@@ -13,6 +13,7 @@ binaries = []
 datas += collect_data_files("vosk")
 datas += collect_data_files("argostranslate")
 datas += collect_data_files("piper")
+datas += collect_data_files("faster_whisper")
 binaries += collect_dynamic_libs("vosk")
 binaries += collect_dynamic_libs("ctranslate2")
 binaries += collect_dynamic_libs("sentencepiece")
@@ -52,6 +53,10 @@ hiddenimports = [
     "piper",
     "piper.voice",
     "piper.config",
+    "faster_whisper",
+    "faster_whisper.audio",
+    "faster_whisper.vad",
+    "faster_whisper.transcribe",
     "vosk",
     "vosk.vosk_cffi",
     "ctranslate2",
