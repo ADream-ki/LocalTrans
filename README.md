@@ -64,9 +64,7 @@ pip install funasr
 
 - 若要启用 Qwen3-ASR（依赖 FunASR）：
 
-```powershell
-pip install funasr
-```
+- 若已执行上一步 `pip install funasr`，此处无需重复安装。
 
 - 若要启用 sherpa-onnx（中文流式识别候选）：
 
@@ -299,6 +297,38 @@ $env:HF_ENDPOINT="https://hf-mirror.com"
 ### 12.3 CLI 下载命令显示成功但模型不完整
 
 以 `localtrans models` 或模型目录实际文件为准进行复核。
+
+### 12.4 双向模式已启动但只有单向有效
+
+1. 先执行 `localtrans devices`，确认本地麦克风与回录设备都可见。
+2. 双向 CLI 至少指定本地麦克风：`--input-device <id>`。
+3. 若自动探测回录设备失败，显式指定 `--reverse-input-device <id>`。
+4. 检查会议软件设备路由，避免“播放端”和“采集端”指向同一链路导致回授抑制持续触发。
+
+## 13. 发布前测试矩阵（建议）
+
+建议最少覆盖以下维度并记录结果，避免“GUI 可启动但链路不可用”：
+
+| 维度 | 最小验证项 | 命令/动作 |
+|---|---|---|
+| CLI 基础 | 可执行、设备可枚举、模型可读取 | `localtrans --version` / `localtrans devices` / `localtrans models` |
+| 单向链路 | `ASR->MT->TTS` 可持续输出 | `localtrans run -s zh -t en` |
+| 双向链路 | 两方向都产生输出且互不阻塞 | `localtrans run --bidirectional --input-device <A> --reverse-input-device <B> -s zh -t en` |
+| 稳定性 | 长时运行无崩溃、自动恢复可触发 | 连续运行 30-60 分钟并观察日志 |
+| GUI 可用性 | 不仅存活，还可启动/停止并有可听输出 | GUI 启动后完整跑通一次双向会话 |
+| 打包产物 | EXE 功能与源码环境一致 | `dist\localtrans*.exe` 重复以上关键用例 |
+
+已内置对应 CI 工作流（GitHub Actions）：
+
+- `.github/workflows/ci-smoke.yml`
+- 覆盖：Windows x86_64、Linux x86_64、Linux aarch64（Docker/QEMU）
+- 包含：`pytest` 双向冒烟 + CLI 命令级冒烟
+
+## 14. 最近能力增强（当前版本）
+
+- 双向会话由 `SessionOrchestrator` 统一编排（CLI/GUI 已接入）。
+- 新增跨方向防回授抑制，降低回声自激循环概率。
+- 新增方向级自动恢复，单方向异常不再拖垮整会话。
 
 ---
 
