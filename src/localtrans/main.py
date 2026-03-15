@@ -3,6 +3,7 @@
 CLI命令行接口
 """
 
+import copy
 import sys
 import signal
 from typing import Optional
@@ -12,7 +13,14 @@ from loguru import logger
 from localtrans import __version__
 from localtrans.config import settings
 from localtrans.pipeline import RealtimePipeline, create_pipeline
+from localtrans.pipeline.realtime import RealtimeConfig, SessionOrchestrator
 from localtrans.audio import VirtualAudioDevice
+
+
+DEFAULT_PIPER_MODELS = {
+    "zh": "piper-zh_CN-huayan",
+    "en": "piper-en_US-lessac",
+}
 
 
 def _percentile(values: list[float], q: float) -> float:
@@ -132,13 +140,130 @@ def download_model(model_name: str, force: bool = False) -> None:
         print(f"[ERROR] 下载失败: {e}")
 
 
+def _default_mt_model_name(source_lang: str, target_lang: str) -> Optional[str]:
+    source = (source_lang or "").strip().lower()
+    target = (target_lang or "").strip().lower()
+    if not source or not target:
+        return None
+    return f"argos-{source}-{target}"
+
+
+def _default_piper_model_name(language: str) -> Optional[str]:
+    return DEFAULT_PIPER_MODELS.get((language or "").strip().lower())
+
+
+def _warn_if_model_missing(model_name: Optional[str]) -> None:
+    if not model_name:
+        return
+    try:
+        from localtrans.utils import ModelDownloader
+
+        downloader = ModelDownloader()
+        if model_name in downloader.AVAILABLE_MODELS and not downloader.is_downloaded(model_name):
+            print(f"[!] 未检测到本地模型: {model_name}")
+            print(f"    可运行: localtrans download {model_name}")
+    except Exception as exc:
+        logger.debug(f"检查模型状态失败({model_name}): {exc}")
+
+
+def _create_direction_pipeline(
+    base_config: RealtimeConfig,
+    *,
+    source_lang: str,
+    target_lang: str,
+    input_device_id: Optional[int],
+    output_to_virtual_device: bool,
+    direction_label: str,
+    direct_asr_translate: bool = False,
+    mt_model_name: Optional[str] = None,
+    tts_model_name: Optional[str] = None,
+) -> RealtimePipeline:
+    pipeline_config = copy.deepcopy(base_config)
+    pipeline_config.source_lang = source_lang
+    pipeline_config.target_lang = target_lang
+    pipeline_config.input_device_id = input_device_id
+    pipeline_config.output_to_virtual_device = output_to_virtual_device
+    pipeline_config.direction_label = direction_label
+    pipeline_config.direct_asr_translate = direct_asr_translate
+    pipeline_config.asr_backend_type = settings.asr.model_type
+
+    asr_config = settings.asr.model_copy(deep=True)
+    asr_config.language = source_lang
+    asr_config.task = "translate" if direct_asr_translate else "transcribe"
+
+    mt_config = settings.mt.model_copy(deep=True)
+    mt_config.source_lang = source_lang
+    mt_config.target_lang = target_lang
+    if mt_model_name:
+        mt_config.model_name = mt_model_name
+
+    tts_config = settings.tts.model_copy(deep=True)
+    tts_config.language = target_lang
+    if tts_model_name is not None:
+        tts_config.model_name = tts_model_name or None
+
+    return RealtimePipeline(
+        config=pipeline_config,
+        asr_config=asr_config,
+        mt_config=mt_config,
+        tts_config=tts_config,
+    )
+
+
+def _iter_runtime_summaries(runner: RealtimePipeline | SessionOrchestrator) -> list[dict]:
+    if isinstance(runner, SessionOrchestrator):
+        return runner.get_runtime_summaries()
+    return [runner.get_runtime_summary()]
+
+
+def _format_runtime_summary(summary: dict) -> str:
+    direction = str(summary.get("direction", "")).strip()
+    prefix = f"{direction}: " if direction else ""
+
+    input_device = summary.get("input_device_id")
+    input_label = f"[{input_device}]" if input_device is not None else "自动"
+
+    output_mode = str(summary.get("output_mode", "") or "speaker")
+    output_device_id = summary.get("output_device_id")
+    if output_mode == "virtual-device":
+        output_label = f"虚拟声卡[{output_device_id}]"
+    elif output_mode == "speaker-fallback":
+        output_label = "默认扬声器(虚拟声卡不可用)"
+    elif output_mode == "disabled":
+        output_label = "关闭"
+    else:
+        output_label = "默认扬声器"
+
+    asr_model = str(summary.get("asr_model", "") or "-")
+    mt_model = str(summary.get("mt_model", "") or "-")
+    if summary.get("tts_enabled"):
+        tts_label = f"{summary.get('tts_engine')}/{summary.get('tts_model') or '-'}"
+    else:
+        tts_label = "off"
+
+    return (
+        f"{prefix}{summary.get('source_lang')}->{summary.get('target_lang')} | "
+        f"输入{input_label} | 输出{output_label} | "
+        f"ASR {summary.get('asr_backend')}/{asr_model} | "
+        f"MT {summary.get('mt_backend')}/{mt_model} | "
+        f"TTS {tts_label}"
+    )
+
+
 def run_interactive(
     source_lang: str = "zh",
     target_lang: str = "en",
     enable_tts: bool = True,
     stream_profile: str = "realtime",
     direct_asr_translate: bool = False,
-) -> None:
+    asr_streaming_mode: str = "legacy",
+    asr_vad_mode: str = "webrtc",
+    asr_partial_step: Optional[float] = None,
+    input_device_id: Optional[int] = None,
+    reverse_input_device_id: Optional[int] = None,
+    bidirectional: bool = False,
+    use_virtual_device: bool = True,
+) -> int:
     """运行交互式翻译"""
     
     print(f"源语言: {source_lang}")
@@ -146,6 +271,13 @@ def run_interactive(
     print(f"语音合成: {'启用' if enable_tts else '禁用'}")
     print(f"运行模式: {stream_profile}")
     print(f"ASR直译: {'启用' if direct_asr_translate else '禁用'}")
+    print(f"ASR流式方案: {asr_streaming_mode}")
+    print(f"流式VAD: {asr_vad_mode}")
+    print(f"会话模式: {'双向' if bidirectional else '单向'}")
+    print(f"本地输入设备: {input_device_id if input_device_id is not None else '自动'}")
+    if bidirectional:
+        print(f"对方语音设备: {reverse_input_device_id if reverse_input_device_id is not None else '自动'}")
+    print(f"正向输出: {'虚拟声卡' if use_virtual_device else '默认扬声器'}")
     print()
 
     profile = (stream_profile or "realtime").lower()
@@ -168,49 +300,121 @@ def run_interactive(
             direct_asr_translate = False
 
     settings.asr.task = "translate" if direct_asr_translate else "transcribe"
-    
-    pipeline = create_pipeline(
-        source_lang=source_lang,
-        target_lang=target_lang,
-        enable_tts=enable_tts,
-        stream_profile=profile,
-        direct_asr_translate=direct_asr_translate,
-    )
-    
+
+    runner: RealtimePipeline | SessionOrchestrator
+    if bidirectional:
+        if input_device_id is None:
+            print("[ERROR] 双向模式需要通过 --input-device 显式指定你的麦克风")
+            print("        可先运行: localtrans devices")
+            return 1
+
+        base_config = RealtimeConfig(
+            source_lang=source_lang,
+            target_lang=target_lang,
+            enable_tts=enable_tts,
+            direct_asr_translate=direct_asr_translate,
+            output_to_virtual_device=use_virtual_device,
+            stream_profile=profile,
+            asr_streaming_mode=asr_streaming_mode,
+            asr_vad_mode=asr_vad_mode,
+            asr_backend_type=settings.asr.model_type,
+            asr_partial_decode_interval=asr_partial_step,
+            input_device_id=input_device_id,
+        )
+
+        reverse_mt_model = None
+        reverse_tts_model = None
+        if str(settings.mt.model_type or "").lower() in {"argos", "argos-ct2"}:
+            reverse_mt_model = _default_mt_model_name(target_lang, source_lang)
+            _warn_if_model_missing(reverse_mt_model)
+        if enable_tts and str(settings.tts.engine or "").lower() == "piper":
+            reverse_tts_model = _default_piper_model_name(source_lang)
+            _warn_if_model_missing(reverse_tts_model)
+
+        forward_pipeline = _create_direction_pipeline(
+            base_config,
+            source_lang=source_lang,
+            target_lang=target_lang,
+            input_device_id=input_device_id,
+            output_to_virtual_device=use_virtual_device,
+            direction_label="我→对方",
+            direct_asr_translate=direct_asr_translate,
+        )
+        reverse_pipeline = _create_direction_pipeline(
+            base_config,
+            source_lang=target_lang,
+            target_lang=source_lang,
+            input_device_id=reverse_input_device_id,
+            output_to_virtual_device=False,
+            direction_label="对方→我",
+            direct_asr_translate=False,
+            mt_model_name=reverse_mt_model,
+            tts_model_name=reverse_tts_model,
+        )
+        runner = SessionOrchestrator(
+            {
+                "forward": forward_pipeline,
+                "reverse": reverse_pipeline,
+            }
+        )
+    else:
+        runner = create_pipeline(
+            source_lang=source_lang,
+            target_lang=target_lang,
+            enable_tts=enable_tts,
+            use_virtual_device=use_virtual_device,
+            stream_profile=profile,
+            direct_asr_translate=direct_asr_translate,
+            asr_streaming_mode=asr_streaming_mode,
+            asr_vad_mode=asr_vad_mode,
+            asr_partial_decode_interval=asr_partial_step,
+            input_device_id=input_device_id,
+        )
+
     def signal_handler(sig, frame):
         print("\n正在停止...")
-        pipeline.stop()
+        runner.stop()
         sys.exit(0)
     
     signal.signal(signal.SIGINT, signal_handler)
     
     print("正在启动翻译流水线...")
     
-    if not pipeline.start():
+    if not runner.start():
         print("[ERROR] 启动失败！")
-        return
+        return 1
     
     print("[OK] 翻译已启动，按 Ctrl+C 停止")
+    print("会话摘要:")
+    for summary in _iter_runtime_summaries(runner):
+        print(f"- {_format_runtime_summary(summary)}")
     print()
     
     try:
         import time
-        while pipeline.is_running:
+        session_summary_lines = [f"- {_format_runtime_summary(summary)}" for summary in _iter_runtime_summaries(runner)]
+        while runner.is_running:
             time.sleep(0.5)
-            history = pipeline.get_history(limit=5)
+            history = runner.get_history(limit=8 if bidirectional else 5)
             if history:
                 print("\033[H\033[J", end="")
                 print("=" * 50)
                 print("翻译结果 (按 Ctrl+C 停止)")
                 print("=" * 50)
+                print("会话摘要:")
+                for line in session_summary_lines:
+                    print(line)
                 for item in history:
-                    print(f"\n[源] {item['source']}")
-                    print(f"[译] {item['translation']}")
+                    direction = str(item.get("direction", "")).strip()
+                    prefix = f"[{direction}] " if direction else ""
+                    print(f"\n[源] {prefix}{item['source']}")
+                    print(f"[译] {prefix}{item['translation']}")
     except KeyboardInterrupt:
         pass
     finally:
-        pipeline.stop()
+        runner.stop()
         print("\n[OK] 翻译已停止")
+    return 0
 
 
 def benchmark_latency(
@@ -368,6 +572,15 @@ def main() -> int:
     run_parser.add_argument("-s", "--source", default="zh", help="源语言 (默认: zh)")
     run_parser.add_argument("-t", "--target", default="en", help="目标语言 (默认: en)")
     run_parser.add_argument("--no-tts", action="store_true", help="禁用语音合成")
+    run_parser.add_argument("--input-device", type=int, default=None, help="输入设备ID；双向模式下该参数用于你的麦克风")
+    run_parser.add_argument(
+        "--reverse-input-device",
+        type=int,
+        default=None,
+        help="双向模式下对方语音输入设备ID；不指定则自动探测会议回录/Stereo Mix/VB-CABLE",
+    )
+    run_parser.add_argument("--bidirectional", action="store_true", help="启用双向会话")
+    run_parser.add_argument("--no-virtual-output", action="store_true", help="正向语音不输出到虚拟声卡，改为默认扬声器")
     run_parser.add_argument(
         "--profile",
         default="realtime",
@@ -378,6 +591,24 @@ def main() -> int:
         "--asr-direct-translate",
         action="store_true",
         help="启用Whisper ASR直译（中->英，跳过MT）",
+    )
+    run_parser.add_argument(
+        "--asr-streaming-mode",
+        default="legacy",
+        choices=["legacy", "managed"],
+        help="ASR流式方案：legacy 为原始切窗，managed 为本地状态机/VAD",
+    )
+    run_parser.add_argument(
+        "--asr-vad-mode",
+        default="webrtc",
+        choices=["webrtc", "energy", "silero"],
+        help="managed 流式方案使用的VAD模式",
+    )
+    run_parser.add_argument(
+        "--asr-partial-step",
+        type=float,
+        default=None,
+        help="managed 流式方案的 partial 解码步长（秒）",
     )
     
     subparsers.add_parser("devices", help="列出音频设备")
@@ -403,12 +634,19 @@ def main() -> int:
     show_welcome()
     
     if args.command == "run":
-        run_interactive(
+        return run_interactive(
             source_lang=args.source,
             target_lang=args.target,
             enable_tts=not args.no_tts,
             stream_profile=args.profile,
             direct_asr_translate=args.asr_direct_translate,
+            asr_streaming_mode=args.asr_streaming_mode,
+            asr_vad_mode=args.asr_vad_mode,
+            asr_partial_step=args.asr_partial_step,
+            input_device_id=args.input_device,
+            reverse_input_device_id=args.reverse_input_device,
+            bidirectional=args.bidirectional,
+            use_virtual_device=not args.no_virtual_output,
         )
     elif args.command == "devices":
         show_devices()

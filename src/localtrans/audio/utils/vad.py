@@ -103,6 +103,21 @@ class VoiceActivityDetector:
         if frame.dtype == np.int16:
             frame = frame.astype(np.float32) / 32768.0
         return float(np.sqrt(np.mean(frame ** 2)))
+
+    def _iter_frames(self, audio: np.ndarray):
+        """将任意长度音频切成VAD帧，便于统一后端判断。"""
+        frame = np.asarray(audio)
+        if frame.ndim > 1:
+            frame = frame.reshape(-1)
+
+        if frame.size == 0:
+            return
+
+        for start in range(0, len(frame), self._frame_size):
+            chunk = frame[start:start + self._frame_size]
+            if len(chunk) < self._frame_size:
+                chunk = np.pad(chunk, (0, self._frame_size - len(chunk)))
+            yield np.ascontiguousarray(chunk)
     
     def _is_speech_energy(self, frame: np.ndarray) -> bool:
         """能量检测"""
@@ -119,29 +134,40 @@ class VoiceActivityDetector:
     
     def _is_speech_webrtc(self, frame: np.ndarray) -> bool:
         """WebRTC VAD检测"""
-        if frame.dtype != np.int16:
-            frame = (frame * 32767).astype(np.int16)
-        
-        # 确保帧大小正确
-        if len(frame) < self._frame_size:
-            frame = np.pad(frame, (0, self._frame_size - len(frame)))
-        
-        return self._vad.is_speech(frame.tobytes(), self.sample_rate)
+        speech_frames = 0
+        total_frames = 0
+
+        for chunk in self._iter_frames(frame):
+            if chunk.dtype != np.int16:
+                chunk = np.clip(chunk, -1.0, 1.0)
+                chunk = (chunk * 32767).astype(np.int16)
+            total_frames += 1
+            if self._vad.is_speech(chunk.tobytes(), self.sample_rate):
+                speech_frames += 1
+
+        if total_frames == 0:
+            return False
+        return (speech_frames / float(total_frames)) >= 0.25
     
     def _is_speech_silero(self, frame: np.ndarray) -> bool:
         """Silero VAD检测"""
         import torch
-        
-        if frame.dtype == np.int16:
-            frame = frame.astype(np.float32) / 32768.0
-        
-        # 转换为tensor
-        audio_tensor = torch.from_numpy(frame).unsqueeze(0)
-        
-        with torch.no_grad():
-            speech_prob = self._vad(audio_tensor, self.sample_rate).item()
-        
-        return speech_prob > 0.5
+
+        speech_hits = 0
+        total_frames = 0
+        for chunk in self._iter_frames(frame):
+            if chunk.dtype == np.int16:
+                chunk = chunk.astype(np.float32) / 32768.0
+            audio_tensor = torch.from_numpy(chunk).unsqueeze(0)
+            with torch.no_grad():
+                speech_prob = self._vad(audio_tensor, self.sample_rate).item()
+            total_frames += 1
+            if speech_prob > 0.5:
+                speech_hits += 1
+
+        if total_frames == 0:
+            return False
+        return (speech_hits / float(total_frames)) >= 0.25
     
     def is_speech(self, frame: np.ndarray) -> bool:
         """
@@ -178,58 +204,51 @@ class VoiceActivityDetector:
             VAD片段列表
         """
         segments = []
-        
-        # 分帧处理
-        num_frames = len(audio) // self._frame_size
-        
-        speech_frames = []
-        current_start = 0.0
-        
-        for i in range(num_frames):
-            start_idx = i * self._frame_size
-            end_idx = start_idx + self._frame_size
-            frame = audio[start_idx:end_idx]
-            
-            frame_time = start_idx / self.sample_rate
+
+        current_state = VADState.SILENCE
+        speech_start = 0.0
+        speech_duration = 0.0
+        trailing_silence = 0.0
+
+        audio_arr = np.asarray(audio)
+        if audio_arr.ndim > 1:
+            audio_arr = audio_arr.reshape(-1)
+
+        for idx, frame in enumerate(self._iter_frames(audio_arr)):
+            frame_time = (idx * self._frame_size) / self.sample_rate
+            frame_duration = len(frame) / float(self.sample_rate)
             is_speech = self.is_speech(frame)
-            
+
             if is_speech:
-                if self._state == VADState.SILENCE:
-                    # 从静音转到语音
-                    self._state = VADState.SPEECH
-                    current_start = frame_time
-                    speech_frames = [frame]
-                else:
-                    speech_frames.append(frame)
-            else:
-                if self._state == VADState.SPEECH:
-                    # 从语音转到静音
-                    silence_duration = (i - len(speech_frames)) * self.frame_duration_ms / 1000
-                    
-                    if silence_duration >= min_silence_duration:
-                        # 结束语音片段
-                        speech_duration = len(speech_frames) * self.frame_duration_ms / 1000
-                        
-                        if speech_duration >= min_speech_duration:
-                            segments.append(VADSegment(
-                                start=current_start,
-                                end=frame_time,
+                if current_state == VADState.SILENCE:
+                    current_state = VADState.SPEECH
+                    speech_start = frame_time
+                    speech_duration = 0.0
+                speech_duration += frame_duration
+                trailing_silence = 0.0
+                continue
+
+            if current_state == VADState.SPEECH:
+                trailing_silence += frame_duration
+                if trailing_silence >= min_silence_duration:
+                    if speech_duration >= min_speech_duration:
+                        segments.append(
+                            VADSegment(
+                                start=speech_start,
+                                end=max(speech_start, frame_time - trailing_silence),
                                 is_speech=True,
-                            ))
-                        
-                        self._state = VADState.SILENCE
-                        speech_frames = []
-        
-        # 处理最后的语音片段
-        if speech_frames:
-            speech_duration = len(speech_frames) * self.frame_duration_ms / 1000
-            if speech_duration >= min_speech_duration:
-                segments.append(VADSegment(
-                    start=current_start,
-                    end=len(audio) / self.sample_rate,
-                    is_speech=True,
-                ))
-        
+                            )
+                        )
+                    current_state = VADState.SILENCE
+                    speech_duration = 0.0
+                    trailing_silence = 0.0
+
+        if current_state == VADState.SPEECH and speech_duration >= min_speech_duration:
+            end_time = len(audio_arr) / float(self.sample_rate)
+            if trailing_silence > 0.0:
+                end_time = max(speech_start, end_time - trailing_silence)
+            segments.append(VADSegment(start=speech_start, end=end_time, is_speech=True))
+
         return segments
     
     def filter_silence(

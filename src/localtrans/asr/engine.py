@@ -3,8 +3,9 @@ ASR引擎
 支持faster-whisper、whisper等多种后端
 """
 
-import time
 import json
+import re
+import time
 from abc import ABC, abstractmethod
 from typing import Generator, List, Optional, Iterator
 from dataclasses import dataclass
@@ -14,6 +15,7 @@ import numpy as np
 from loguru import logger
 
 from localtrans.config import settings, ASRConfig
+from localtrans.asr.funasr_direct import FunASRDirectRuntime
 
 
 @dataclass
@@ -25,6 +27,7 @@ class TranscriptionResult:
     start_time: float
     end_time: float
     words: Optional[List[dict]] = None
+    is_final: bool = True
     
     @property
     def duration(self) -> float:
@@ -351,9 +354,12 @@ class WhisperBackend(ASRBackend):
 class FunASRBackend(ASRBackend):
     """FunASR后端（优先用于中文实时场景）"""
 
+    _DEFAULT_MODEL_REF = "FunAudioLLM/SenseVoiceSmall"
+
     def __init__(self, config: ASRConfig):
         self.config = config
         self._model = None
+        self._runtime: Optional[FunASRDirectRuntime] = None
         self._load_model()
 
     def _resolve_model_ref(self) -> str:
@@ -364,15 +370,10 @@ class FunASRBackend(ASRBackend):
 
         model_size = (self.config.model_size or "").strip()
         if model_size.lower() in {"tiny", "base", "small", "medium", "large"}:
-            return "iic/SenseVoiceSmall"
-        return model_size or "iic/SenseVoiceSmall"
+            return self._DEFAULT_MODEL_REF
+        return model_size or self._DEFAULT_MODEL_REF
 
-    def _load_model(self):
-        try:
-            from funasr import AutoModel
-        except ImportError as exc:
-            raise ImportError("请安装funasr: pip install funasr") from exc
-
+    def _resolve_device(self) -> str:
         device = self.config.device
         if device == "auto":
             try:
@@ -383,28 +384,26 @@ class FunASRBackend(ASRBackend):
                 device = "cpu"
         elif device == "cuda":
             device = "cuda:0"
+        return device
+
+    def _load_model(self):
+        try:
+            import torch  # noqa: F401
+        except ImportError as exc:
+            raise ImportError("请安装funasr/torch: pip install funasr torch") from exc
+
+        device = self._resolve_device()
 
         model_ref = self._resolve_model_ref()
         logger.info(f"加载FunASR模型: {model_ref}, device={device}")
 
-        # 兼容不同版本 FunASR AutoModel 参数签名
-        init_attempts = [
-            {"trust_remote_code": True, "disable_update": True},
-            {"trust_remote_code": True},
-            {},
-        ]
-        last_exc = None
-        for extra_kwargs in init_attempts:
-            try:
-                self._model = AutoModel(model=model_ref, device=device, **extra_kwargs)
-                last_exc = None
-                break
-            except TypeError as exc:
-                last_exc = exc
-                continue
-
-        if self._model is None:
-            raise RuntimeError(f"FunASR模型初始化失败: {last_exc}") from last_exc
+        self._runtime = FunASRDirectRuntime(
+            model_ref=model_ref,
+            device=device,
+            language=self.config.language or "auto",
+            word_timestamps=bool(self.config.word_timestamps),
+        )
+        self._model = self._runtime.model
 
         logger.info("FunASR模型加载完成")
 
@@ -434,31 +433,64 @@ class FunASRBackend(ASRBackend):
             return " ".join([p for p in parts if p]).strip()
         return str(result_obj).strip()
 
+    @staticmethod
+    def _normalize_text(text: str, language: str) -> str:
+        cleaned = " ".join((text or "").replace("\r", " ").replace("\n", " ").split())
+        if not cleaned:
+            return ""
+
+        lang = (language or "").lower()
+        if lang.startswith("zh") or lang.startswith("yue") or lang.startswith("ja"):
+            cleaned = re.sub(r"(?<=[\u3400-\u9fff])\s+(?=[\u3400-\u9fff])", "", cleaned)
+            cleaned = re.sub(r"\s+([，。！？；：、,.!?;:])", r"\1", cleaned)
+            cleaned = re.sub(r"([（《〈“‘【])\s+", r"\1", cleaned)
+            cleaned = re.sub(r"\s+([）》〉”’】])", r"\1", cleaned)
+        return cleaned.strip()
+
+    @staticmethod
+    def _extract_confidence(words: Optional[List[dict]]) -> float:
+        if not words:
+            return 0.0
+        probs = []
+        for item in words:
+            if not isinstance(item, dict):
+                continue
+            prob = item.get("probability")
+            if prob is None:
+                prob = item.get("score")
+            if prob is None:
+                continue
+            try:
+                probs.append(float(prob))
+            except Exception:
+                continue
+        return float(sum(probs) / len(probs)) if probs else 0.0
+
     def transcribe(self, audio: np.ndarray, **kwargs) -> TranscriptionResult:
+        if self._runtime is None:
+            raise RuntimeError("FunASR运行时尚未初始化")
+
         prepared_audio = FasterWhisperBackend._prepare_audio(audio)
         duration = len(prepared_audio) / settings.audio.sample_rate if len(prepared_audio) else 0.0
 
-        generate_kwargs = {
-            "input": prepared_audio,
-            "language": self.config.language or "auto",
-        }
-        generate_kwargs.update(kwargs)
+        inference_kwargs = dict(kwargs)
+        inference_kwargs.setdefault("language", self.config.language or "auto")
+        inference_kwargs.setdefault("output_timestamp", bool(self.config.word_timestamps))
+        result_obj = self._runtime.infer(prepared_audio, **inference_kwargs)
 
-        try:
-            result_obj = self._model.generate(**generate_kwargs)
-        except TypeError:
-            # 兼容旧版本参数
-            generate_kwargs.pop("language", None)
-            result_obj = self._model.generate(**generate_kwargs)
+        words = result_obj.get("words") if isinstance(result_obj, dict) else None
 
-        text = self._extract_text(result_obj)
+        text = self._normalize_text(
+            self._extract_text(result_obj),
+            self.config.language or "zh",
+        )
         return TranscriptionResult(
             text=text,
             language=self.config.language or "zh",
-            confidence=0.0,
+            confidence=self._extract_confidence(words),
             start_time=0.0,
             end_time=duration,
-            words=None,
+            words=words,
         )
 
     def transcribe_stream(
@@ -487,6 +519,30 @@ class FunASRBackend(ASRBackend):
             result = self.transcribe(np.concatenate(buffer), **kwargs)
             if result.text.strip():
                 yield result
+
+
+class Qwen3ASRBackend(FunASRBackend):
+    """Qwen3-ASR后端（基于FunASR直连模型加载）"""
+
+    _DEFAULT_06B = "Qwen/Qwen3-ASR-0.6B"
+    _DEFAULT_17B = "Qwen/Qwen3-ASR-1.7B"
+
+    def _resolve_model_ref(self) -> str:
+        if self.config.model_path:
+            return str(self.config.model_path)
+        if self.config.model_name:
+            return str(self.config.model_name)
+
+        model_size = (self.config.model_size or "").strip().lower()
+        if any(key in model_size for key in {"1.7", "1_7", "1-7", "1b", "large"}):
+            return self._DEFAULT_17B
+        if any(key in model_size for key in {"0.6", "0_6", "0-6", "0b", "flash", "small", "realtime"}):
+            return self._DEFAULT_06B
+        return self._DEFAULT_06B
+
+    def _load_model(self):
+        super()._load_model()
+        logger.info("Qwen3-ASR模型加载完成")
 
 
 class SherpaOnnxBackend(ASRBackend):
@@ -650,6 +706,57 @@ class SherpaOnnxBackend(ASRBackend):
             raise RuntimeError(f"sherpa-onnx paraformer初始化失败: {last_exc}") from last_exc
         return None
 
+    def _build_wenet_ctc_recognizer(self, sherpa_onnx, model_dir: Path):
+        tokens = self._find_first_existing(model_dir, ["tokens.txt", "tokens"])
+        model = self._find_first_existing(
+            model_dir,
+            [
+                "model.int8.onnx",
+                "model.onnx",
+                "final.int8.onnx",
+                "final.onnx",
+                "wenet.int8.onnx",
+                "wenet.onnx",
+            ],
+        )
+        if not all([tokens, model]):
+            return None
+
+        recognizer_cls = getattr(sherpa_onnx, "OfflineRecognizer", None)
+        if recognizer_cls is None:
+            return None
+
+        ctor = getattr(recognizer_cls, "from_wenet_ctc", None)
+        if ctor is None:
+            return None
+
+        provider = self._provider_from_device(self.config.device)
+        common = {
+            "tokens": str(tokens),
+            "num_threads": max(1, int(getattr(settings, "max_workers", 1))),
+            "sample_rate": self._sample_rate,
+            "feature_dim": 80,
+            "decoding_method": "greedy_search",
+            "provider": provider,
+        }
+
+        attempts = [
+            {**common, "model": str(model)},
+            {**common, "model_path": str(model)},
+        ]
+
+        last_exc = None
+        for kwargs in attempts:
+            try:
+                return ctor(**kwargs)
+            except TypeError as exc:
+                last_exc = exc
+                continue
+
+        if last_exc is not None:
+            raise RuntimeError(f"sherpa-onnx wenet-ctc初始化失败: {last_exc}") from last_exc
+        return None
+
     def _load_model(self):
         try:
             import sherpa_onnx
@@ -662,11 +769,14 @@ class SherpaOnnxBackend(ASRBackend):
         recognizer = self._build_transducer_recognizer(sherpa_onnx, model_dir)
         if recognizer is None:
             recognizer = self._build_paraformer_recognizer(sherpa_onnx, model_dir)
+        if recognizer is None:
+            recognizer = self._build_wenet_ctc_recognizer(sherpa_onnx, model_dir)
 
         if recognizer is None:
             raise RuntimeError(
                 "未识别的sherpa-onnx模型布局，需包含 "
-                "transducer(encoder/decoder/joiner/tokens) 或 paraformer(model/tokens)"
+                "transducer(encoder/decoder/joiner/tokens) 或 "
+                "paraformer(model/tokens) 或 wenet-ctc(model/tokens)"
             )
 
         self._recognizer = recognizer
@@ -736,6 +846,36 @@ class SherpaOnnxBackend(ASRBackend):
             result = self.transcribe(np.concatenate(buffer), **kwargs)
             if result.text.strip():
                 yield result
+
+
+class WenetBackend(SherpaOnnxBackend):
+    """WeNet后端（基于sherpa-onnx运行时，兼容WeNet导出的ONNX模型）"""
+
+    def _resolve_model_dir(self) -> Path:
+        if self.config.model_path:
+            path = Path(self.config.model_path)
+            if not path.exists():
+                raise FileNotFoundError(f"wenet模型路径不存在: {path}")
+            return path
+
+        if self.config.model_name:
+            named = settings.models_dir / "asr" / str(self.config.model_name)
+            if named.exists():
+                return named
+            maybe_path = Path(self.config.model_name)
+            if maybe_path.exists():
+                return maybe_path
+
+        fallback = settings.models_dir / "asr" / "wenet-u2pp-cn"
+        if fallback.exists():
+            return fallback
+        raise FileNotFoundError(
+            "未找到WeNet模型目录，请先配置LOCALTRANS_ASR__MODEL_PATH或准备wenet-u2pp-cn目录"
+        )
+
+    def _load_model(self):
+        super()._load_model()
+        logger.info("WeNet模型加载完成")
 
 
 class VoskBackend(ASRBackend):
@@ -887,7 +1027,9 @@ class ASREngine:
         "faster-whisper": FasterWhisperBackend,
         "whisper": WhisperBackend,
         "funasr": FunASRBackend,
+        "qwen3-asr": Qwen3ASRBackend,
         "sherpa-onnx": SherpaOnnxBackend,
+        "wenet": WenetBackend,
         "vosk": VoskBackend,
     }
     

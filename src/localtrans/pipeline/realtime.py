@@ -10,12 +10,13 @@ import queue
 from typing import Optional, Callable, List, Dict
 from dataclasses import dataclass
 from collections import deque
+from difflib import SequenceMatcher
 
 from loguru import logger
 
 from localtrans.audio import AudioCapturer, AudioOutputManager, VirtualAudioDevice
-from localtrans.asr import StreamingASR, TranscriptionResult
-from localtrans.config import settings
+from localtrans.asr import ASREngine, StreamingASR, TranscriptionResult
+from localtrans.config import settings, ASRConfig, MTConfig, TTSConfig
 from localtrans.mt import MTEngine
 from localtrans.tts import TTSEngine
 
@@ -41,14 +42,19 @@ class RealtimeConfig:
     translation_batch_chars: int = 28
     max_tts_queue: int = 2
     tts_merge_chars: int = 80
+    asr_streaming_mode: str = "legacy"
     asr_vad_enabled: bool = True
+    asr_vad_mode: str = "webrtc"
     asr_vad_energy_threshold: float = 0.01
     asr_vad_silence_duration: float = 0.18
     asr_min_buffer_duration: Optional[float] = None
     asr_max_buffer_duration: Optional[float] = None
+    asr_partial_decode_interval: Optional[float] = None
     min_asr_confidence: float = 0.08
     min_cjk_ratio: float = 0.08
     drop_hallucination: bool = True
+    asr_backend_type: Optional[str] = None
+    direction_label: str = ""
     
     # 音频输出
     output_device: Optional[str] = None
@@ -58,9 +64,17 @@ class RealtimeConfig:
     def __post_init__(self) -> None:
         profile = (self.stream_profile or "realtime").lower()
         self.stream_profile = profile
+        self.asr_streaming_mode = (self.asr_streaming_mode or "legacy").strip().lower()
+        if self.asr_streaming_mode not in {"legacy", "managed"}:
+            self.asr_streaming_mode = "legacy"
+        self.asr_vad_mode = (self.asr_vad_mode or "webrtc").strip().lower()
+        if self.asr_vad_mode not in {"energy", "webrtc", "silero"}:
+            self.asr_vad_mode = "webrtc"
         self.stream_agreement = max(1, int(self.stream_agreement))
         self.min_asr_confidence = max(0.0, min(1.0, float(self.min_asr_confidence)))
         self.min_cjk_ratio = max(0.0, min(1.0, float(self.min_cjk_ratio)))
+        if self.asr_partial_decode_interval is not None:
+            self.asr_partial_decode_interval = max(0.05, float(self.asr_partial_decode_interval))
 
         if profile == "quality":
             if self.stream_flush_interval <= 0.2:
@@ -83,13 +97,11 @@ class RealtimeConfig:
                 self.asr_vad_silence_duration = 0.24
             if self.asr_vad_energy_threshold >= 0.01:
                 self.asr_vad_energy_threshold = 0.008
-            if self.min_asr_confidence < 0.18:
-                self.min_asr_confidence = 0.18
+            if self.min_asr_confidence < 0.10:
+                self.min_asr_confidence = 0.10
             if self.min_cjk_ratio < 0.15:
                 self.min_cjk_ratio = 0.15
-            return
-
-        if profile == "balanced":
+        elif profile == "balanced":
             if self.stream_flush_interval <= 0.2:
                 self.stream_flush_interval = 0.25
             if self.stream_min_chars <= 2:
@@ -108,20 +120,44 @@ class RealtimeConfig:
                 self.asr_max_buffer_duration = max(self.asr_buffer_duration, 0.8)
             if self.asr_vad_silence_duration <= 0.18:
                 self.asr_vad_silence_duration = 0.2
-            if self.min_asr_confidence < 0.12:
-                self.min_asr_confidence = 0.12
+            if self.min_asr_confidence < 0.08:
+                self.min_asr_confidence = 0.08
             if self.min_cjk_ratio < 0.1:
                 self.min_cjk_ratio = 0.1
+        else:
+            if self.asr_min_buffer_duration is None:
+                self.asr_min_buffer_duration = max(0.22, self.asr_buffer_duration * 0.5)
+            if self.asr_max_buffer_duration is None:
+                self.asr_max_buffer_duration = max(self.asr_buffer_duration, 0.5)
+            if self.translation_batch_chars <= 0:
+                self.translation_batch_chars = 28
+            if self.tts_merge_chars <= 0:
+                self.tts_merge_chars = 80
+
+        self._apply_backend_streaming_defaults()
+
+    def _apply_backend_streaming_defaults(self) -> None:
+        backend = (self.asr_backend_type or settings.asr.model_type or "").strip().lower()
+        if self.asr_streaming_mode != "managed":
+            return
+        if backend not in {"funasr", "qwen3-asr"}:
             return
 
-        if self.asr_min_buffer_duration is None:
-            self.asr_min_buffer_duration = max(0.22, self.asr_buffer_duration * 0.5)
-        if self.asr_max_buffer_duration is None:
-            self.asr_max_buffer_duration = max(self.asr_buffer_duration, 0.5)
-        if self.translation_batch_chars <= 0:
-            self.translation_batch_chars = 28
-        if self.tts_merge_chars <= 0:
-            self.tts_merge_chars = 80
+        # FunASR/SenseVoice 类模型并非真正的在线流式架构，partial 重解码需要更保守的窗口和提交策略。
+        self.asr_buffer_duration = max(float(self.asr_buffer_duration), 0.9)
+        self.asr_min_buffer_duration = max(float(self.asr_min_buffer_duration or 0.0), 0.55)
+        self.asr_max_buffer_duration = max(float(self.asr_max_buffer_duration or 0.0), 1.2)
+        self.asr_partial_decode_interval = max(float(self.asr_partial_decode_interval or 0.0), 0.45)
+        self.asr_vad_silence_duration = max(float(self.asr_vad_silence_duration), 0.24)
+
+        self.stream_flush_interval = max(float(self.stream_flush_interval), 0.45)
+        self.stream_min_chars = max(int(self.stream_min_chars), 6)
+        self.stream_max_chars = max(int(self.stream_max_chars), 20)
+        self.stream_agreement = max(int(self.stream_agreement), 3)
+        self.translation_batch_chars = max(int(self.translation_batch_chars), 60)
+        self.max_translation_queue = max(int(self.max_translation_queue), 4)
+        self.min_asr_confidence = max(float(self.min_asr_confidence), 0.12)
+        self.min_cjk_ratio = max(float(self.min_cjk_ratio), 0.15)
 
 
 class RealtimePipeline:
@@ -168,9 +204,16 @@ class RealtimePipeline:
         self,
         config: Optional[RealtimeConfig] = None,
         result_callback: Optional[Callable[[Dict], None]] = None,
+        asr_config: Optional[ASRConfig] = None,
+        mt_config: Optional[MTConfig] = None,
+        tts_config: Optional[TTSConfig] = None,
     ):
         self.config = config or RealtimeConfig()
         self._result_callback = result_callback
+        self._source_acceptor: Optional[Callable[[str, str], bool]] = None
+        self._asr_config = (asr_config or settings.asr).model_copy(deep=True)
+        self._mt_config = (mt_config or settings.mt).model_copy(deep=True)
+        self._tts_config = (tts_config or settings.tts).model_copy(deep=True)
         
         # 组件
         self._audio_capturer: Optional[AudioCapturer] = None
@@ -193,16 +236,31 @@ class RealtimePipeline:
         # 增量流式状态
         self._text_state_lock = threading.Lock()
         self._last_asr_text = ""
+        self._committed_partial_text = ""
         self._pending_source_text = ""
         self._last_source_emit_ts = 0.0
         self._last_emitted_segment = ""
         self._agreement_candidate = ""
         self._agreement_hits = 0
+        self._agreement_candidate_ts = 0.0
         
         # 历史记录
         self._history: deque = deque(maxlen=100)
         
         logger.info("RealtimePipeline初始化完成")
+
+    def set_source_acceptor(self, acceptor: Optional[Callable[[str, str], bool]]) -> None:
+        """设置外部来源文本过滤器；返回 False 时会跳过当前片段翻译。"""
+        self._source_acceptor = acceptor
+
+    def should_accept_source_text(self, source_text: str) -> bool:
+        if not self._source_acceptor:
+            return True
+        try:
+            return bool(self._source_acceptor(source_text, self.config.direction_label))
+        except Exception as exc:
+            logger.warning(f"来源文本过滤器异常，已放行: {exc}")
+            return True
 
     @staticmethod
     def _normalize_text(text: str) -> str:
@@ -283,12 +341,22 @@ class RealtimePipeline:
         if not cleaned:
             return ""
 
-        min_conf = max(0.0, float(self.config.min_asr_confidence))
-        if confidence > 0.0 and confidence < min_conf and len(cleaned) <= max(10, int(self.config.stream_max_chars) * 2):
-            return ""
-
         lang = (language or self.config.source_lang or "").lower()
-        if lang.startswith("zh") or self.config.source_lang.lower().startswith("zh"):
+        source_lang = (self.config.source_lang or "").lower()
+        is_zh_context = lang.startswith("zh") or source_lang.startswith("zh")
+
+        min_conf = max(0.0, float(self.config.min_asr_confidence))
+        if confidence > 0.0 and confidence < min_conf:
+            has_hard_break = any(ch in cleaned for ch in self._HARD_BREAK_CHARS)
+            short_limit = 4 if is_zh_context else max(6, int(self.config.stream_max_chars) // 2)
+            very_low_limit = max(0.02, min_conf * 0.4)
+            # 仅在“极低置信度”或“超短无断句”时过滤，避免正常口语被吞字。
+            if confidence < very_low_limit and len(cleaned) <= max(10, int(self.config.stream_max_chars)):
+                return ""
+            if len(cleaned) <= short_limit and not has_hard_break:
+                return ""
+
+        if is_zh_context:
             ratio = self._cjk_ratio(cleaned)
             # 非中文噪声片段（如幻听英文口号）丢弃
             if ratio < float(self.config.min_cjk_ratio) and len(cleaned) >= 6:
@@ -326,6 +394,75 @@ class RealtimePipeline:
             return curr_text
         # 对分块ASR（每次返回独立片段）兜底：把当前块作为新增文本
         return curr_text
+
+    @staticmethod
+    def _longest_common_prefix(left: str, right: str) -> str:
+        limit = min(len(left), len(right))
+        idx = 0
+        while idx < limit and left[idx] == right[idx]:
+            idx += 1
+        return left[:idx]
+
+    def _use_conservative_partial_commit(self) -> bool:
+        backend = (
+            self.config.asr_backend_type
+            or self._asr_config.model_type
+            or settings.asr.model_type
+            or ""
+        ).strip().lower()
+        return (
+            self.config.asr_streaming_mode == "managed"
+            and backend in {"funasr", "qwen3-asr"}
+        )
+
+    def _partial_commit_min_chars(self) -> int:
+        return max(4, int(self.config.stream_min_chars) - 2)
+
+    def _extract_conservative_partial_delta_locked(self, curr_text: str, is_final: bool) -> str:
+        prev_text = self._last_asr_text
+        committed_text = self._committed_partial_text
+
+        if is_final:
+            if committed_text and curr_text.startswith(committed_text):
+                delta = curr_text[len(committed_text):]
+            else:
+                delta = self._extract_incremental_text(committed_text, curr_text)
+            self._last_asr_text = ""
+            self._committed_partial_text = ""
+            return delta
+
+        self._last_asr_text = curr_text
+        if not prev_text or curr_text == prev_text:
+            return ""
+
+        stable_text = self._normalize_text(self._longest_common_prefix(prev_text, curr_text))
+        if not stable_text:
+            return ""
+
+        if (
+            len(stable_text) < self._partial_commit_min_chars()
+            and not any(ch in stable_text for ch in self._HARD_BREAK_CHARS)
+        ):
+            return ""
+
+        if committed_text:
+            if stable_text == committed_text or len(stable_text) <= len(committed_text):
+                return ""
+            if not stable_text.startswith(committed_text):
+                overlap = self._suffix_prefix_overlap(committed_text, stable_text)
+                if overlap <= 0:
+                    return ""
+                delta = stable_text[overlap:]
+            else:
+                delta = stable_text[len(committed_text):]
+        else:
+            delta = stable_text
+
+        if not delta:
+            return ""
+
+        self._committed_partial_text = stable_text
+        return delta
 
     def _find_split_pos(self, text: str, max_chars: int) -> int:
         if len(text) <= max_chars:
@@ -410,22 +547,40 @@ class RealtimePipeline:
     def _reset_stream_state(self) -> None:
         with self._text_state_lock:
             self._last_asr_text = ""
+            self._committed_partial_text = ""
             self._pending_source_text = ""
             self._last_source_emit_ts = time.time()
             self._last_emitted_segment = ""
             self._agreement_candidate = ""
             self._agreement_hits = 0
+            self._agreement_candidate_ts = 0.0
 
     def _should_emit_segment_locked(self, segment: str) -> bool:
         if segment == self._last_emitted_segment:
             return False
 
         agreement = max(1, int(self.config.stream_agreement))
+        now = time.time()
         # 带强断句符的片段可直接提交，避免尾句等待
         if agreement <= 1 or (segment and segment[-1] in self._HARD_BREAK_CHARS):
             self._last_emitted_segment = segment
             self._agreement_candidate = ""
             self._agreement_hits = 0
+            self._agreement_candidate_ts = 0.0
+            return True
+
+        agreement_timeout_s = max(0.25, float(self.config.stream_flush_interval) * 2.5)
+        if (
+            self._agreement_candidate
+            and segment != self._agreement_candidate
+            and self._agreement_hits > 0
+            and (now - self._agreement_candidate_ts) >= agreement_timeout_s
+        ):
+            # 避免“连续不同短句”导致永不出结果：超时后放行当前片段。
+            self._last_emitted_segment = segment
+            self._agreement_candidate = ""
+            self._agreement_hits = 0
+            self._agreement_candidate_ts = 0.0
             return True
 
         if segment == self._agreement_candidate:
@@ -433,13 +588,30 @@ class RealtimePipeline:
         else:
             self._agreement_candidate = segment
             self._agreement_hits = 1
+            self._agreement_candidate_ts = now
 
         if self._agreement_hits < agreement:
+            if (now - self._agreement_candidate_ts) >= agreement_timeout_s:
+                self._last_emitted_segment = segment
+                self._agreement_candidate = ""
+                self._agreement_hits = 0
+                self._agreement_candidate_ts = 0.0
+                return True
             return False
 
         self._last_emitted_segment = segment
         self._agreement_candidate = ""
         self._agreement_hits = 0
+        self._agreement_candidate_ts = 0.0
+        return True
+
+    def _accept_stable_partial_segment_locked(self, segment: str) -> bool:
+        if segment == self._last_emitted_segment:
+            return False
+        self._last_emitted_segment = segment
+        self._agreement_candidate = ""
+        self._agreement_hits = 0
+        self._agreement_candidate_ts = 0.0
         return True
     
     def _on_transcription(self, result: TranscriptionResult) -> None:
@@ -450,21 +622,33 @@ class RealtimePipeline:
         try:
             current_text = self._normalize_text(result.text)
             confidence = float(getattr(result, "confidence", 0.0) or 0.0)
+            is_final = bool(getattr(result, "is_final", False))
+            stable_partial = False
             with self._text_state_lock:
-                delta_text = self._extract_incremental_text(self._last_asr_text, current_text)
-                self._last_asr_text = current_text
+                if self._use_conservative_partial_commit():
+                    delta_text = self._extract_conservative_partial_delta_locked(current_text, is_final)
+                    stable_partial = bool(delta_text) and not is_final
+                else:
+                    delta_text = self._extract_incremental_text(self._last_asr_text, current_text)
+                    self._last_asr_text = "" if is_final else current_text
                 if delta_text:
                     sanitized_delta = self._sanitize_source_segment(delta_text, result.language, confidence)
                     if sanitized_delta:
                         self._pending_source_text = f"{self._pending_source_text} {sanitized_delta}".strip()
-                segments = self._collect_ready_segments_locked(force=False)
+                segments = self._collect_ready_segments_locked(force=(is_final or stable_partial))
+                if is_final:
+                    self._last_asr_text = ""
+                    self._committed_partial_text = ""
 
             for segment in segments:
                 sanitized_segment = self._sanitize_source_segment(segment, result.language, confidence)
                 if not sanitized_segment:
                     continue
                 with self._text_state_lock:
-                    if not self._should_emit_segment_locked(sanitized_segment):
+                    if stable_partial and not is_final:
+                        if not self._accept_stable_partial_segment_locked(sanitized_segment):
+                            continue
+                    elif not self._should_emit_segment_locked(sanitized_segment):
                         continue
                 self._enqueue_translation_text(sanitized_segment, result.language, confidence=confidence)
         except Exception as e:
@@ -489,6 +673,9 @@ class RealtimePipeline:
             source_text, source_language, created_at, source_confidence = self._coalesce_translation_payload(payload)
             if not source_text.strip():
                 continue
+            if not self.should_accept_source_text(source_text):
+                logger.info(f"[过滤] 已抑制疑似回授文本: {source_text}")
+                continue
 
             logger.info(f"[识别] {source_text}")
 
@@ -510,6 +697,8 @@ class RealtimePipeline:
                     "asr_confidence": source_confidence,
                     "latency_ms": (time.time() - created_at) * 1000.0,
                 }
+                if self.config.direction_label:
+                    item["direction"] = self.config.direction_label
                 logger.debug(f"[延迟] {item['latency_ms']:.0f}ms")
                 self._history.append(item)
 
@@ -652,9 +841,10 @@ class RealtimePipeline:
             )
             
             # 初始化ASR
-            settings.asr.language = self.config.source_lang or settings.asr.language
+            asr_config = self._asr_config.model_copy(deep=True)
+            asr_config.language = self.config.source_lang or asr_config.language
             if self.config.direct_asr_translate:
-                backend = (settings.asr.model_type or "").lower()
+                backend = (asr_config.model_type or "").lower()
                 if backend not in {"faster-whisper", "whisper"}:
                     logger.warning("ASR直译仅支持 whisper/faster-whisper，已降级为常规MT流程")
                     self.config.direct_asr_translate = False
@@ -662,7 +852,7 @@ class RealtimePipeline:
                     logger.warning("ASR直译目前仅支持目标语言为英语，已降级为常规MT流程")
                     self.config.direct_asr_translate = False
 
-            settings.asr.task = "translate" if self.config.direct_asr_translate else "transcribe"
+            asr_config.task = "translate" if self.config.direct_asr_translate else "transcribe"
             asr_min_buffer = (
                 float(self.config.asr_min_buffer_duration)
                 if self.config.asr_min_buffer_duration is not None
@@ -674,22 +864,31 @@ class RealtimePipeline:
                 else max(float(self.config.asr_buffer_duration), asr_min_buffer + 0.1)
             )
             self._streaming_asr = StreamingASR(
+                asr_engine=ASREngine(asr_config),
                 callback=self._on_transcription,
                 buffer_duration=self.config.asr_buffer_duration,
                 overlap_duration=self.config.asr_overlap,
                 min_buffer_duration=asr_min_buffer,
                 max_buffer_duration=asr_max_buffer,
+                streaming_mode=self.config.asr_streaming_mode,
                 vad_enabled=self.config.asr_vad_enabled,
+                vad_mode=self.config.asr_vad_mode,
                 vad_energy_threshold=self.config.asr_vad_energy_threshold,
                 vad_silence_duration=self.config.asr_vad_silence_duration,
+                partial_decode_interval=self.config.asr_partial_decode_interval,
             )
             
             # 初始化MT
-            self._mt_engine = MTEngine()
+            mt_config = self._mt_config.model_copy(deep=True)
+            mt_config.source_lang = self.config.source_lang
+            mt_config.target_lang = self.config.target_lang
+            self._mt_engine = MTEngine(mt_config)
             
             # 初始化TTS
             if self.config.enable_tts:
-                self._tts_engine = TTSEngine()
+                tts_config = self._tts_config.model_copy(deep=True)
+                tts_config.language = self.config.target_lang
+                self._tts_engine = TTSEngine(tts_config)
                 self._audio_output = AudioOutputManager()
             else:
                 self._tts_engine = None
@@ -834,6 +1033,50 @@ class RealtimePipeline:
     def get_history(self, limit: int = 50) -> List[Dict]:
         """获取翻译历史"""
         return list(self._history)[-limit:]
+
+    def get_runtime_summary(self) -> Dict:
+        """返回当前流水线的运行摘要，便于GUI/CLI展示实际生效配置。"""
+        asr_model = (
+            self._asr_config.model_name
+            or self._asr_config.model_path
+            or self._asr_config.model_size
+            or ""
+        )
+        mt_model = self._mt_config.model_name or self._mt_config.model_path or ""
+        tts_model = self._tts_config.model_name or self._tts_config.model_path or ""
+
+        if not self.config.enable_tts:
+            output_mode = "disabled"
+            output_device_id = None
+        elif self.config.output_to_virtual_device and self._virtual_device and self._virtual_device.output_device_id is not None:
+            output_mode = "virtual-device"
+            output_device_id = self._virtual_device.output_device_id
+        elif self.config.output_to_virtual_device:
+            output_mode = "speaker-fallback"
+            output_device_id = None
+        else:
+            output_mode = "speaker"
+            output_device_id = None
+
+        return {
+            "direction": self.config.direction_label,
+            "source_lang": self.config.source_lang,
+            "target_lang": self.config.target_lang,
+            "input_device_id": self.config.input_device_id,
+            "output_mode": output_mode,
+            "output_device_id": output_device_id,
+            "stream_profile": self.config.stream_profile,
+            "asr_streaming_mode": self.config.asr_streaming_mode,
+            "asr_vad_mode": self.config.asr_vad_mode,
+            "asr_backend": self._asr_config.model_type,
+            "asr_model": str(asr_model) if asr_model else "",
+            "mt_backend": self._mt_config.model_type,
+            "mt_model": str(mt_model) if mt_model else "",
+            "tts_enabled": bool(self.config.enable_tts),
+            "tts_engine": self._tts_config.engine,
+            "tts_model": str(tts_model) if tts_model else "",
+            "is_running": bool(self.is_running),
+        }
     
     def clear_history(self) -> None:
         """清空历史"""
@@ -859,6 +1102,9 @@ def create_pipeline(
     use_virtual_device: bool = True,
     stream_profile: str = "realtime",
     direct_asr_translate: bool = False,
+    asr_streaming_mode: str = "legacy",
+    asr_vad_mode: str = "webrtc",
+    asr_partial_decode_interval: Optional[float] = None,
     input_device_id: Optional[int] = None,
     input_device_name: Optional[str] = None,
     result_callback: Optional[Callable[[Dict], None]] = None,
@@ -871,7 +1117,213 @@ def create_pipeline(
         direct_asr_translate=direct_asr_translate,
         output_to_virtual_device=use_virtual_device,
         stream_profile=stream_profile,
+        asr_streaming_mode=asr_streaming_mode,
+        asr_vad_mode=asr_vad_mode,
+        asr_backend_type=settings.asr.model_type,
+        asr_partial_decode_interval=asr_partial_decode_interval,
         input_device_id=input_device_id,
         input_device_name=input_device_name,
     )
     return RealtimePipeline(config, result_callback=result_callback)
+
+
+class BidirectionalRealtimeSession:
+    """同时运行两条反向实时翻译链路。"""
+
+    def __init__(self, *pipelines: RealtimePipeline):
+        self._pipelines = [pipeline for pipeline in pipelines if pipeline is not None]
+
+    def start(self) -> bool:
+        started: list[RealtimePipeline] = []
+        for pipeline in self._pipelines:
+            if not pipeline.start():
+                for active in reversed(started):
+                    active.stop()
+                return False
+            started.append(pipeline)
+        return True
+
+    def stop(self) -> None:
+        for pipeline in reversed(self._pipelines):
+            try:
+                pipeline.stop()
+            except Exception as exc:
+                logger.warning(f"停止双向流水线异常: {exc}")
+
+    @property
+    def is_running(self) -> bool:
+        return any(pipeline.is_running for pipeline in self._pipelines)
+
+    def get_history(self, limit: int = 50) -> List[Dict]:
+        history: List[Dict] = []
+        for pipeline in self._pipelines:
+            history.extend(pipeline.get_history(limit=limit))
+        history.sort(key=lambda item: float(item.get("timestamp", 0.0)))
+        return history[-limit:]
+
+    def get_runtime_summaries(self) -> List[Dict]:
+        return [pipeline.get_runtime_summary() for pipeline in self._pipelines]
+
+
+class SessionOrchestrator:
+    """Phase 1 编排壳层：统一管理多方向流水线，内部仍复用现有 RealtimePipeline。"""
+
+    def __init__(
+        self,
+        directions: Dict[str, RealtimePipeline],
+        *,
+        restart_enabled: bool = True,
+        restart_check_interval_s: float = 0.6,
+        restart_cooldown_s: float = 1.5,
+        restart_max_attempts: int = 3,
+    ):
+        self._directions = {name: pipeline for name, pipeline in directions.items() if pipeline is not None}
+        self._feedback_lock = threading.Lock()
+        self._recent_outputs: Dict[str, deque[tuple[float, str]]] = {
+            name: deque(maxlen=40) for name in self._directions.keys()
+        }
+        self._feedback_window_s = 6.0
+        self._feedback_similarity = 0.92
+        self._install_feedback_guards()
+
+        self._restart_enabled = bool(restart_enabled)
+        self._restart_check_interval_s = max(0.1, float(restart_check_interval_s))
+        self._restart_cooldown_s = max(0.1, float(restart_cooldown_s))
+        self._restart_max_attempts = max(1, int(restart_max_attempts))
+        self._restart_attempts: Dict[str, int] = {name: 0 for name in self._directions.keys()}
+        self._last_restart_ts: Dict[str, float] = {name: 0.0 for name in self._directions.keys()}
+        self._shutdown_event = threading.Event()
+        self._monitor_thread: Optional[threading.Thread] = None
+
+        self._session = BidirectionalRealtimeSession(*self._directions.values())
+
+    @property
+    def direction_names(self) -> List[str]:
+        return list(self._directions.keys())
+
+    @property
+    def is_running(self) -> bool:
+        return self._session.is_running
+
+    def start(self) -> bool:
+        self._shutdown_event.clear()
+        started = self._session.start()
+        if not started:
+            return False
+        if self._restart_enabled and self._monitor_thread is None:
+            self._monitor_thread = threading.Thread(
+                target=self._monitor_loop,
+                name="session-orchestrator-monitor",
+                daemon=True,
+            )
+            self._monitor_thread.start()
+        return True
+
+    def stop(self) -> None:
+        self._shutdown_event.set()
+        self._session.stop()
+        if self._monitor_thread and self._monitor_thread.is_alive():
+            self._monitor_thread.join(timeout=2.0)
+        self._monitor_thread = None
+
+    def get_history(self, limit: int = 50) -> List[Dict]:
+        return self._session.get_history(limit=limit)
+
+    def get_runtime_summaries(self) -> List[Dict]:
+        summaries: List[Dict] = []
+        for name, pipeline in self._directions.items():
+            summary = pipeline.get_runtime_summary()
+            summary["direction_name"] = name
+            summary["restart_attempts"] = int(self._restart_attempts.get(name, 0))
+            summary["restart_enabled"] = self._restart_enabled
+            summaries.append(summary)
+        return summaries
+
+    @staticmethod
+    def _normalize_feedback_text(text: str) -> str:
+        normalized = " ".join((text or "").lower().split())
+        if not normalized:
+            return ""
+        # 仅保留字母数字与中文，降低标点差异带来的误判。
+        keep = []
+        for ch in normalized:
+            if ch.isalnum() or ("\u4e00" <= ch <= "\u9fff"):
+                keep.append(ch)
+        return "".join(keep)
+
+    def _install_feedback_guards(self) -> None:
+        for name, pipeline in self._directions.items():
+            original_callback = getattr(pipeline, "_result_callback", None)
+
+            def _result_wrapper(item: Dict, *, _name: str = name, _cb=original_callback):
+                self._record_direction_output(_name, str(item.get("translation", "")))
+                if _cb:
+                    _cb(item)
+
+            pipeline._result_callback = _result_wrapper
+            pipeline.set_source_acceptor(
+                lambda source_text, _direction, _name=name: self._accept_source_for_direction(_name, source_text)
+            )
+
+    def _record_direction_output(self, direction_name: str, text: str) -> None:
+        normalized = self._normalize_feedback_text(text)
+        if not normalized:
+            return
+        now = time.time()
+        with self._feedback_lock:
+            self._recent_outputs.setdefault(direction_name, deque(maxlen=40)).append((now, normalized))
+
+    def _accept_source_for_direction(self, direction_name: str, source_text: str) -> bool:
+        normalized_source = self._normalize_feedback_text(source_text)
+        if len(normalized_source) < 6:
+            return True
+
+        now = time.time()
+        with self._feedback_lock:
+            for other_name, outputs in self._recent_outputs.items():
+                if other_name == direction_name:
+                    continue
+                for ts, candidate in reversed(outputs):
+                    if (now - ts) > self._feedback_window_s:
+                        break
+                    if len(candidate) < 6:
+                        continue
+                    if normalized_source == candidate:
+                        return False
+                    ratio = SequenceMatcher(None, normalized_source, candidate).ratio()
+                    if ratio >= self._feedback_similarity:
+                        return False
+        return True
+
+    def _monitor_loop(self) -> None:
+        while not self._shutdown_event.is_set():
+            for name, pipeline in self._directions.items():
+                if self._shutdown_event.is_set():
+                    break
+                if pipeline.is_running:
+                    self._restart_attempts[name] = 0
+                    continue
+
+                attempts = int(self._restart_attempts.get(name, 0))
+                if attempts >= self._restart_max_attempts:
+                    continue
+
+                now = time.time()
+                if (now - float(self._last_restart_ts.get(name, 0.0))) < self._restart_cooldown_s:
+                    continue
+
+                self._last_restart_ts[name] = now
+                self._restart_attempts[name] = attempts + 1
+                logger.warning(
+                    f"方向[{name}]已停止，执行自动恢复 "
+                    f"(attempt={self._restart_attempts[name]}/{self._restart_max_attempts})"
+                )
+                try:
+                    if pipeline.start():
+                        logger.info(f"方向[{name}]自动恢复成功")
+                        self._restart_attempts[name] = 0
+                    else:
+                        logger.warning(f"方向[{name}]自动恢复失败")
+                except Exception as exc:
+                    logger.warning(f"方向[{name}]自动恢复异常: {exc}")
+            self._shutdown_event.wait(self._restart_check_interval_s)

@@ -8,6 +8,7 @@ import sys
 import hashlib
 import json
 import zipfile
+import tarfile
 import time
 import shutil
 from pathlib import Path
@@ -24,7 +25,7 @@ class ModelInfo:
     """模型信息"""
     name: str
     type: str  # asr, mt, tts
-    source: str  # huggingface, local
+    source: str  # huggingface, openai, direct, argos
     url: Optional[str] = None
     size_mb: Optional[float] = None
     checksum: Optional[str] = None
@@ -98,7 +99,31 @@ class ModelDownloader:
             name="funasr-sensevoice-small",
             type="asr",
             source="huggingface",
-            url="iic/SenseVoiceSmall",
+            url="FunAudioLLM/SenseVoiceSmall",
+        ),
+        "qwen3-asr-0.6b": ModelInfo(
+            name="qwen3-asr-0.6b",
+            type="asr",
+            source="huggingface",
+            url="Qwen/Qwen3-ASR-0.6B",
+            size_mb=1800,
+        ),
+        "qwen3-asr-1.7b": ModelInfo(
+            name="qwen3-asr-1.7b",
+            type="asr",
+            source="huggingface",
+            url="Qwen/Qwen3-ASR-1.7B",
+            size_mb=3800,
+        ),
+        "wenet-u2pp-cn": ModelInfo(
+            name="wenet-u2pp-cn",
+            type="asr",
+            source="direct",
+            url=(
+                "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/"
+                "sherpa-onnx-wenetspeech-wu-u2pp-conformer-ctc-zh-int8-2026-02-03.tar.bz2"
+            ),
+            size_mb=111,
         ),
         "sherpa-onnx-zh-en-zipformer": ModelInfo(
             name="sherpa-onnx-zh-en-zipformer",
@@ -388,15 +413,21 @@ class ModelDownloader:
         if not model.url:
             raise ValueError(f"模型 {model.name} 缺少下载URL")
 
-        target_dir.mkdir(parents=True, exist_ok=True)
-        zip_path = target_dir.parent / f"{model.name}.zip"
+        target_parent = target_dir.parent
+        target_parent.mkdir(parents=True, exist_ok=True)
+        if target_dir.exists():
+            shutil.rmtree(target_dir, ignore_errors=True)
+
+        archive_name = Path(urlparse(model.url).path).name or f"{model.name}.bin"
+        archive_path = target_parent / archive_name
+        before_entries = {p.name for p in target_parent.iterdir()}
 
         logger.info(f"下载模型文件: {model.url}")
         with requests.get(model.url, stream=True, timeout=60) as response:
             response.raise_for_status()
             total_size = int(response.headers.get("content-length", 0))
             downloaded = 0
-            with open(zip_path, "wb") as f:
+            with open(archive_path, "wb") as f:
                 for chunk in response.iter_content(chunk_size=1024 * 1024):
                     if not chunk:
                         continue
@@ -404,20 +435,56 @@ class ModelDownloader:
                     downloaded += len(chunk)
                     if progress_callback and total_size > 0:
                         progress_callback(downloaded / total_size)
+        archive_name_lower = archive_name.lower()
+        created_entries = []
+        if archive_name_lower.endswith(".zip"):
+            logger.info(f"解压ZIP模型: {archive_path}")
+            with zipfile.ZipFile(archive_path, "r") as zf:
+                zf.extractall(target_parent)
+        elif archive_name_lower.endswith((".tar.gz", ".tgz", ".tar.bz2", ".tbz2", ".tar.xz", ".txz", ".tar")):
+            logger.info(f"解压TAR模型: {archive_path}")
+            with tarfile.open(archive_path, "r:*") as tf:
+                tf.extractall(target_parent)
+        else:
+            logger.info(f"模型文件非压缩包，直接保存: {archive_path.name}")
+            target_dir.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(archive_path), str(target_dir / archive_path.name))
 
-        logger.info(f"解压模型: {zip_path}")
-        with zipfile.ZipFile(zip_path, "r") as zf:
-            zf.extractall(target_dir.parent)
+        created_entries = [
+            p for p in target_parent.iterdir()
+            if p.name not in before_entries and p.name != archive_path.name
+        ]
 
-        # Vosk包通常会解压出同名目录，确保返回目录正确
+        if archive_path.exists():
+            archive_path.unlink()
+
+        # 标准化目录：统一落到 target_dir，便于GUI和缓存复用
         extracted_dir = target_dir
-        if not extracted_dir.exists():
-            candidates = [p for p in target_dir.parent.iterdir() if p.is_dir() and p.name.startswith(model.name)]
-            if candidates:
-                extracted_dir = candidates[0]
-
-        if zip_path.exists():
-            zip_path.unlink()
+        if target_dir.exists() and any(target_dir.iterdir()):
+            extracted_dir = target_dir
+        elif len(created_entries) == 1 and created_entries[0].is_dir():
+            candidate = created_entries[0]
+            if candidate != target_dir:
+                if target_dir.exists():
+                    shutil.rmtree(target_dir, ignore_errors=True)
+                shutil.move(str(candidate), str(target_dir))
+            extracted_dir = target_dir
+        elif created_entries:
+            target_dir.mkdir(parents=True, exist_ok=True)
+            for entry in created_entries:
+                if entry == target_dir:
+                    continue
+                dest = target_dir / entry.name
+                if dest.exists():
+                    if dest.is_dir():
+                        shutil.rmtree(dest, ignore_errors=True)
+                    else:
+                        dest.unlink()
+                shutil.move(str(entry), str(dest))
+            extracted_dir = target_dir
+        else:
+            target_dir.mkdir(parents=True, exist_ok=True)
+            extracted_dir = target_dir
 
         self._cache[model.name] = {
             "downloaded": True,

@@ -37,7 +37,7 @@ class ASRConfig(BaseModel):
     # 模型配置
     model_type: str = Field(
         default="vosk",
-        description="模型类型: vosk, whisper, faster-whisper, funasr, sherpa-onnx",
+        description="模型类型: vosk, whisper, faster-whisper, funasr, qwen3-asr, sherpa-onnx, wenet",
     )
     model_size: str = Field(default="base", description="模型大小: tiny, base, small, medium, large")
     model_name: Optional[str] = Field(default=None, description="模型名称（可覆盖model_size）")
