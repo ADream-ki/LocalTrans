@@ -3,6 +3,7 @@
 import pytest
 import numpy as np
 from unittest.mock import Mock, patch
+from types import SimpleNamespace
 
 from localtrans.audio.capturer import AudioCapturer, CaptureState, AudioChunk
 from localtrans.audio.virtual_device import VirtualAudioDevice
@@ -41,6 +42,49 @@ class TestAudioCapturer:
         
         assert chunk.sample_rate == 16000
         assert chunk.duration == 0.1
+
+    def test_resolve_stream_params_fallback_sample_rate(self, monkeypatch):
+        """设备不支持16k时应自动降级到可用采样率。"""
+        capturer = AudioCapturer(sample_rate=16000, channels=1, device_id=27)
+
+        monkeypatch.setattr(
+            "localtrans.audio.capturer.sd.query_devices",
+            lambda: [{"max_input_channels": 2, "default_samplerate": 44100}],
+        )
+
+        def fake_check_input_settings(device, samplerate, channels, dtype):
+            if samplerate == 16000:
+                raise RuntimeError("Invalid sample rate")
+            return None
+
+        monkeypatch.setattr(
+            "localtrans.audio.capturer.sd.check_input_settings",
+            fake_check_input_settings,
+        )
+
+        sr, ch = capturer._resolve_stream_params(device_id=0)
+        assert sr == 44100
+        assert ch == 1
+
+    def test_audio_callback_resamples_to_target_rate(self):
+        """回调应将输入重采样为目标采样率。"""
+        capturer = AudioCapturer(sample_rate=16000, channels=1)
+        capturer._stream_sample_rate = 44100
+        capturer._stream_channels = 2
+
+        # 10ms 立体声音频 @44.1k
+        frames = 441
+        indata = np.random.randint(-1000, 1000, size=(frames, 2), dtype=np.int16)
+        time_info = SimpleNamespace(currentTime=0.123)
+
+        capturer._audio_callback(indata, frames, time_info, status=None)
+        chunk = capturer.get_chunk(timeout=0.2)
+        assert chunk is not None
+        assert chunk.sample_rate == 16000
+        assert chunk.channels == 1
+        # 10ms @16k ≈ 160 samples
+        assert 150 <= len(chunk.data) <= 170
+        assert chunk.data.dtype == np.float32
 
 
 class TestVirtualAudioDevice:

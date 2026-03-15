@@ -52,6 +52,22 @@ class TestTTSEngine:
             engine.close()
             engine._backend.close.assert_called_once()
 
+    def test_synthesize_retry_on_empty_audio(self):
+        """TTS空音频时应自动重试并恢复。"""
+        with patch.object(TTSEngine, "_load_backend"):
+            engine = TTSEngine(TTSConfig(engine="piper", language="zh"))
+            backend = Mock()
+            backend.synthesize.side_effect = [
+                SynthesisResult(audio=np.array([], dtype=np.int16), sample_rate=22050, text="你好", duration=0.0),
+                SynthesisResult(audio=np.array([1, 2], dtype=np.int16), sample_rate=22050, text="你好。", duration=0.0),
+            ]
+            engine._backend = backend
+
+            result = engine.synthesize("你好")
+
+            assert len(result.audio) == 2
+            assert backend.synthesize.call_count >= 2
+
 
 class TestStreamingTTS:
     """流式TTS测试"""

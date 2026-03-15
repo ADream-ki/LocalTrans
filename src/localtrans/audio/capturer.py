@@ -52,6 +52,11 @@ class AudioCapturer:
         self.chunk_size = chunk_size or settings.audio.chunk_size
         self.device_id = device_id
         self.device_name = device_name or settings.audio.virtual_input_device
+        self._requested_sample_rate = int(self.sample_rate)
+        self._requested_channels = int(self.channels)
+        self._stream_sample_rate = int(self.sample_rate)
+        self._stream_channels = int(self.channels)
+        self._device_resolved_id = device_id
         
         self._state = CaptureState.IDLE
         self._stream: Optional[sd.InputStream] = None
@@ -75,6 +80,88 @@ class AudioCapturer:
                 })
         logger.debug(f"发现 {len(input_devices)} 个输入设备")
         return input_devices
+
+    @staticmethod
+    def _normalize_audio(indata: np.ndarray) -> np.ndarray:
+        arr = np.asarray(indata)
+        if arr.size == 0:
+            return np.array([], dtype=np.float32)
+
+        if arr.ndim > 1:
+            arr = np.mean(arr, axis=1)
+
+        if np.issubdtype(arr.dtype, np.integer):
+            info = np.iinfo(arr.dtype)
+            denom = float(max(abs(info.min), abs(info.max), 1))
+            arr = arr.astype(np.float32) / denom
+        else:
+            arr = arr.astype(np.float32, copy=False)
+        return np.ascontiguousarray(arr)
+
+    @staticmethod
+    def _resample_linear(audio: np.ndarray, source_rate: int, target_rate: int) -> np.ndarray:
+        if source_rate == target_rate:
+            return audio
+        if audio.size == 0:
+            return np.array([], dtype=np.float32)
+
+        duration = audio.size / float(source_rate)
+        target_len = max(1, int(round(duration * target_rate)))
+        src_x = np.linspace(0.0, 1.0, num=audio.size, endpoint=True)
+        dst_x = np.linspace(0.0, 1.0, num=target_len, endpoint=True)
+        return np.interp(dst_x, src_x, audio).astype(np.float32)
+
+    def _resolve_stream_params(self, device_id: Optional[int]) -> tuple[int, int]:
+        desired_sr = int(self._requested_sample_rate)
+        desired_ch = int(self._requested_channels)
+
+        devices = sd.query_devices()
+        max_input_channels = desired_ch
+        default_sr = desired_sr
+        if device_id is not None:
+            try:
+                dev_info = devices[int(device_id)]
+                max_input_channels = int(max(1, dev_info.get("max_input_channels", desired_ch)))
+                default_sr = int(dev_info.get("default_samplerate", desired_sr) or desired_sr)
+            except Exception:
+                pass
+
+        channel_candidates = []
+        for ch in (desired_ch, min(desired_ch, max_input_channels), 1):
+            ch = int(max(1, ch))
+            if ch <= max_input_channels and ch not in channel_candidates:
+                channel_candidates.append(ch)
+        if not channel_candidates:
+            channel_candidates = [1]
+
+        sample_rate_candidates = []
+        for sr in (desired_sr, default_sr, 48000, 44100, 32000, 24000, 22050, 16000, 8000):
+            sr = int(max(8000, sr))
+            if sr not in sample_rate_candidates:
+                sample_rate_candidates.append(sr)
+
+        last_exc = None
+        for ch in channel_candidates:
+            for sr in sample_rate_candidates:
+                try:
+                    sd.check_input_settings(
+                        device=device_id,
+                        samplerate=sr,
+                        channels=ch,
+                        dtype=np.int16,
+                    )
+                    if sr != desired_sr or ch != desired_ch:
+                        logger.warning(
+                            f"输入设备参数自动降级: {desired_sr}Hz/{desired_ch}ch -> {sr}Hz/{ch}ch"
+                        )
+                    return sr, ch
+                except Exception as exc:
+                    last_exc = exc
+                    continue
+
+        if last_exc is not None:
+            raise last_exc
+        return desired_sr, desired_ch
     
     def find_virtual_device(self, name_pattern: str = "VB-Audio") -> Optional[int]:
         """查找虚拟音频设备"""
@@ -90,14 +177,22 @@ class AudioCapturer:
         """音频流回调函数"""
         if status:
             logger.warning(f"音频流状态: {status}")
+
+        processed = self._normalize_audio(indata)
+        if self._stream_sample_rate != self.sample_rate:
+            processed = self._resample_linear(
+                processed,
+                source_rate=self._stream_sample_rate,
+                target_rate=self.sample_rate,
+            )
         
         # 创建音频块
         chunk = AudioChunk(
-            data=indata.copy(),
+            data=processed,
             sample_rate=self.sample_rate,
             channels=self.channels,
             timestamp=time_info.currentTime,
-            duration=frames / self.sample_rate,
+            duration=(len(processed) / float(self.sample_rate)) if self.sample_rate > 0 else 0.0,
         )
         
         # 放入队列或直接回调
@@ -122,12 +217,16 @@ class AudioCapturer:
             device_id = self.device_id
             if device_id is None and self.device_name:
                 device_id = self.find_virtual_device(self.device_name)
+            self._device_resolved_id = device_id
+            stream_sr, stream_ch = self._resolve_stream_params(device_id)
+            self._stream_sample_rate = int(stream_sr)
+            self._stream_channels = int(stream_ch)
             
             # 创建音频流
             self._stream = sd.InputStream(
                 device=device_id,
-                channels=self.channels,
-                samplerate=self.sample_rate,
+                channels=self._stream_channels,
+                samplerate=self._stream_sample_rate,
                 blocksize=self.chunk_size,
                 dtype=np.int16,
                 callback=self._audio_callback,
@@ -135,7 +234,12 @@ class AudioCapturer:
             
             self._stream.start()
             self._state = CaptureState.CAPTURING
-            logger.info(f"音频捕获已启动 (设备: {device_id or '默认'})")
+            logger.info(
+                "音频捕获已启动 "
+                f"(设备: {device_id or '默认'}, "
+                f"stream={self._stream_sample_rate}Hz/{self._stream_channels}ch, "
+                f"target={self.sample_rate}Hz/{self.channels}ch)"
+            )
     
     def stop(self) -> None:
         """停止捕获音频"""

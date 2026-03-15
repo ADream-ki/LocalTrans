@@ -192,6 +192,11 @@ class ModelDownloader:
                    "en/en_US/lessac/medium/en_US-lessac-medium.onnx.json"],
         ),
     }
+    MODELSCOPE_REPO_MAP = {
+        "funasr-sensevoice-small": "iic/SenseVoiceSmall",
+        "qwen3-asr-0.6b": "Qwen/Qwen3-ASR-0.6B",
+        "qwen3-asr-1.7b": "Qwen/Qwen3-ASR-1.7B",
+    }
     
     def __init__(self, models_dir: Optional[Path] = None):
         self.models_dir = models_dir or Path.home() / ".localtrans" / "models"
@@ -291,7 +296,7 @@ class ModelDownloader:
         target_dir: Path,
         progress_callback: Optional[callable],
     ) -> Path:
-        """从Hugging Face下载"""
+        """从 HuggingFace 下载（支持自动回退到 ModelScope）"""
         def _mark_downloaded(path: Path) -> Path:
             self._cache[model.name] = {
                 "downloaded": True,
@@ -301,8 +306,12 @@ class ModelDownloader:
             logger.info(f"模型 {model.name} 下载完成")
             return path
 
+        hub_mode = str(os.getenv("LOCALTRANS_MODEL_HUB", "auto")).strip().lower()
+        if hub_mode not in {"auto", "huggingface", "modelscope"}:
+            hub_mode = "auto"
+
         # faster-whisper 走专用下载链路，规避 snapshot 缓存不一致导致的失败
-        if model.name.startswith("faster-whisper-"):
+        if model.name.startswith("faster-whisper-") and hub_mode != "modelscope":
             try:
                 from faster_whisper.utils import download_model as fw_download_model
             except ImportError as exc:
@@ -336,10 +345,16 @@ class ModelDownloader:
                         time.sleep(attempt * 1.5)
             raise RuntimeError(f"下载faster-whisper模型失败: {model.name}") from last_exc
 
+        if hub_mode == "modelscope":
+            return self._download_from_modelscope(model, target_dir, progress_callback, _mark_downloaded)
+
         try:
             from huggingface_hub import snapshot_download, hf_hub_download
         except ImportError as exc:
-            raise ImportError("请安装huggingface_hub: pip install huggingface_hub") from exc
+            if hub_mode == "huggingface":
+                raise ImportError("请安装huggingface_hub: pip install huggingface_hub") from exc
+            logger.warning(f"huggingface_hub 不可用，回退到 ModelScope: {exc}")
+            return self._download_from_modelscope(model, target_dir, progress_callback, _mark_downloaded)
 
         target_dir.mkdir(parents=True, exist_ok=True)
         last_exc = None
@@ -371,7 +386,60 @@ class ModelDownloader:
                 if attempt < 3:
                     time.sleep(attempt * 1.5)
 
-        raise RuntimeError(f"下载模型失败: {model.name}") from last_exc
+        if hub_mode == "huggingface":
+            raise RuntimeError(f"下载模型失败: {model.name}") from last_exc
+
+        logger.warning(f"HuggingFace连续失败，尝试回退到 ModelScope: {model.name}")
+        return self._download_from_modelscope(model, target_dir, progress_callback, _mark_downloaded)
+
+    def _download_from_modelscope(
+        self,
+        model: ModelInfo,
+        target_dir: Path,
+        progress_callback: Optional[callable],
+        mark_downloaded,
+    ) -> Path:
+        """从 ModelScope 下载（魔塔）"""
+        try:
+            from modelscope.hub.snapshot_download import snapshot_download
+            from modelscope.hub.file_download import model_file_download
+        except ImportError as exc:
+            raise ImportError("请安装 modelscope: pip install modelscope") from exc
+
+        target_dir.mkdir(parents=True, exist_ok=True)
+        repo_id = self.MODELSCOPE_REPO_MAP.get(model.name, model.url)
+        if not repo_id:
+            raise ValueError(f"模型 {model.name} 缺少可用仓库地址")
+
+        last_exc = None
+        for attempt in range(1, 4):
+            try:
+                if model.files:
+                    for file_path in model.files:
+                        logger.info(f"ModelScope下载文件({attempt}/3): {repo_id}::{file_path}")
+                        model_file_download(
+                            model_id=repo_id,
+                            file_path=file_path,
+                            revision="master",
+                            local_dir=str(target_dir),
+                            local_files_only=False,
+                        )
+                else:
+                    logger.info(f"ModelScope下载仓库({attempt}/3): {repo_id}")
+                    snapshot_download(
+                        model_id=repo_id,
+                        revision="master",
+                        local_dir=str(target_dir),
+                        local_files_only=False,
+                    )
+                return mark_downloaded(target_dir)
+            except Exception as exc:
+                last_exc = exc
+                logger.warning(f"ModelScope下载失败({attempt}/3): {model.name} -> {exc}")
+                if attempt < 3:
+                    time.sleep(attempt * 1.5)
+
+        raise RuntimeError(f"ModelScope下载模型失败: {model.name}") from last_exc
     
     def _download_whisper(
         self,

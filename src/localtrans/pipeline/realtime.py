@@ -7,10 +7,11 @@ import time
 import re
 import threading
 import queue
-from typing import Optional, Callable, List, Dict
+from typing import Optional, Callable, List, Dict, Protocol, runtime_checkable
 from dataclasses import dataclass
 from collections import deque
 from difflib import SequenceMatcher
+from pathlib import Path
 
 from loguru import logger
 
@@ -19,6 +20,156 @@ from localtrans.asr import ASREngine, StreamingASR, TranscriptionResult
 from localtrans.config import settings, ASRConfig, MTConfig, TTSConfig
 from localtrans.mt import MTEngine
 from localtrans.tts import TTSEngine
+
+
+class _LockedMTEngine:
+    """线程安全的 MT 代理，避免共享引擎并发访问导致状态竞态。"""
+
+    def __init__(self, engine: MTEngine):
+        self._engine = engine
+        self._lock = threading.Lock()
+
+    def translate(self, text: str, source_lang: str, target_lang: str):
+        with self._lock:
+            return self._engine.translate(text, source_lang=source_lang, target_lang=target_lang)
+
+    def translate_batch(self, texts: List[str], source_lang: str, target_lang: str):
+        with self._lock:
+            return self._engine.translate_batch(texts, source_lang=source_lang, target_lang=target_lang)
+
+
+class SharedMTEngineRegistry:
+    """进程内 MT 引擎共享注册表（按配置键缓存）。"""
+
+    _lock = threading.Lock()
+    _engines: Dict[str, _LockedMTEngine] = {}
+
+    @classmethod
+    def _normalize_path(cls, value: Optional[Path]) -> str:
+        if value is None:
+            return ""
+        try:
+            return str(Path(value).resolve())
+        except Exception:
+            return str(value)
+
+    @classmethod
+    def _build_key(cls, config: MTConfig) -> str:
+        return "|".join(
+            [
+                str(config.model_type or ""),
+                str(config.model_name or ""),
+                cls._normalize_path(config.model_path),
+                str(config.source_lang or ""),
+                str(config.target_lang or ""),
+                str(config.device or ""),
+                str(config.compute_type or ""),
+                str(config.max_length or ""),
+                str(config.term_bank_enabled),
+                cls._normalize_path(config.term_bank_path),
+            ]
+        )
+
+    @classmethod
+    def get_or_create(cls, config: MTConfig) -> _LockedMTEngine:
+        key = cls._build_key(config)
+        with cls._lock:
+            engine = cls._engines.get(key)
+            if engine is not None:
+                return engine
+            engine = _LockedMTEngine(MTEngine(config.model_copy(deep=True)))
+            cls._engines[key] = engine
+            return engine
+
+
+class _LockedTTSEngine:
+    """线程安全的 TTS 代理，避免共享引擎并发合成导致竞态。"""
+
+    def __init__(self, engine: TTSEngine):
+        self._engine = engine
+        self._lock = threading.Lock()
+
+    def synthesize(self, text: str):
+        with self._lock:
+            return self._engine.synthesize(text)
+
+    def close(self) -> None:
+        with self._lock:
+            self._engine.close()
+
+
+class SharedTTSEngineRegistry:
+    """进程内 TTS 引擎共享注册表（按配置键缓存）。"""
+
+    _lock = threading.Lock()
+    _engines: Dict[str, _LockedTTSEngine] = {}
+
+    @classmethod
+    def _normalize_path(cls, value: Optional[Path]) -> str:
+        if value is None:
+            return ""
+        try:
+            return str(Path(value).resolve())
+        except Exception:
+            return str(value)
+
+    @classmethod
+    def _build_key(cls, config: TTSConfig) -> str:
+        return "|".join(
+            [
+                str(config.engine or ""),
+                str(config.model_name or ""),
+                cls._normalize_path(config.model_path),
+                str(config.language or ""),
+                str(config.speaker or ""),
+                str(config.speed or ""),
+                str(config.device or ""),
+                str(config.sample_rate or ""),
+            ]
+        )
+
+    @classmethod
+    def get_or_create(cls, config: TTSConfig) -> _LockedTTSEngine:
+        key = cls._build_key(config)
+        with cls._lock:
+            engine = cls._engines.get(key)
+            if engine is not None:
+                return engine
+            engine = _LockedTTSEngine(TTSEngine(config.model_copy(deep=True)))
+            cls._engines[key] = engine
+            return engine
+
+
+@runtime_checkable
+class DirectionWorker(Protocol):
+    """方向工作器接口：Orchestrator 仅依赖该接口，不绑定具体实现。"""
+
+    config: "RealtimeConfig"
+
+    @property
+    def is_running(self) -> bool:
+        ...
+
+    def start(self) -> bool:
+        ...
+
+    def stop(self) -> None:
+        ...
+
+    def get_history(self, limit: int = 50) -> List[Dict]:
+        ...
+
+    def get_runtime_summary(self) -> Dict:
+        ...
+
+    def set_source_acceptor(self, acceptor: Optional[Callable[[str, str], bool]]) -> None:
+        ...
+
+    def set_mt_engine(self, mt_engine: Optional[object]) -> None:
+        ...
+
+    def set_tts_engine(self, tts_engine: Optional[object]) -> None:
+        ...
 
 
 @dataclass
@@ -160,6 +311,25 @@ class RealtimeConfig:
         self.min_cjk_ratio = max(float(self.min_cjk_ratio), 0.15)
 
 
+def resolve_streaming_mode(
+    requested_mode: str,
+    *,
+    asr_backend_type: Optional[str],
+    source_lang: Optional[str],
+) -> str:
+    """标准化并按后端/语言修正流式方案。"""
+    mode = (requested_mode or "legacy").strip().lower()
+    if mode not in {"legacy", "managed"}:
+        mode = "legacy"
+
+    backend = (asr_backend_type or "").strip().lower()
+    src = (source_lang or "").strip().lower()
+    # FunASR/Qwen3-ASR 在中文场景下默认切到 managed，减少 legacy 切窗碎片误识别。
+    if mode == "legacy" and backend in {"funasr", "qwen3-asr"} and src.startswith("zh"):
+        return "managed"
+    return mode
+
+
 class RealtimePipeline:
     """
     实时翻译流水线
@@ -207,6 +377,8 @@ class RealtimePipeline:
         asr_config: Optional[ASRConfig] = None,
         mt_config: Optional[MTConfig] = None,
         tts_config: Optional[TTSConfig] = None,
+        mt_engine: Optional[object] = None,
+        tts_engine: Optional[object] = None,
     ):
         self.config = config or RealtimeConfig()
         self._result_callback = result_callback
@@ -214,12 +386,15 @@ class RealtimePipeline:
         self._asr_config = (asr_config or settings.asr).model_copy(deep=True)
         self._mt_config = (mt_config or settings.mt).model_copy(deep=True)
         self._tts_config = (tts_config or settings.tts).model_copy(deep=True)
+        self._external_mt_engine = mt_engine
+        self._external_tts_engine = tts_engine
         
         # 组件
         self._audio_capturer: Optional[AudioCapturer] = None
         self._streaming_asr: Optional[StreamingASR] = None
-        self._mt_engine: Optional[MTEngine] = None
-        self._tts_engine: Optional[TTSEngine] = None
+        self._mt_engine: Optional[object] = None
+        self._tts_engine: Optional[object] = None
+        self._owns_tts_engine: bool = False
         self._audio_output: Optional[AudioOutputManager] = None
         self._virtual_device: Optional[VirtualAudioDevice] = None
         
@@ -252,6 +427,14 @@ class RealtimePipeline:
     def set_source_acceptor(self, acceptor: Optional[Callable[[str, str], bool]]) -> None:
         """设置外部来源文本过滤器；返回 False 时会跳过当前片段翻译。"""
         self._source_acceptor = acceptor
+
+    def set_mt_engine(self, mt_engine: Optional[object]) -> None:
+        """注入外部 MT 引擎（可用于会话级共享）。"""
+        self._external_mt_engine = mt_engine
+
+    def set_tts_engine(self, tts_engine: Optional[object]) -> None:
+        """注入外部 TTS 引擎（可用于会话级共享）。"""
+        self._external_tts_engine = tts_engine
 
     def should_accept_source_text(self, source_text: str) -> bool:
         if not self._source_acceptor:
@@ -878,21 +1061,30 @@ class RealtimePipeline:
                 partial_decode_interval=self.config.asr_partial_decode_interval,
             )
             
-            # 初始化MT
-            mt_config = self._mt_config.model_copy(deep=True)
-            mt_config.source_lang = self.config.source_lang
-            mt_config.target_lang = self.config.target_lang
-            self._mt_engine = MTEngine(mt_config)
-            
+            # 初始化MT（优先使用会话注入的共享引擎）
+            if self._external_mt_engine is not None:
+                self._mt_engine = self._external_mt_engine
+            else:
+                mt_config = self._mt_config.model_copy(deep=True)
+                mt_config.source_lang = self.config.source_lang
+                mt_config.target_lang = self.config.target_lang
+                self._mt_engine = MTEngine(mt_config)
+             
             # 初始化TTS
             if self.config.enable_tts:
-                tts_config = self._tts_config.model_copy(deep=True)
-                tts_config.language = self.config.target_lang
-                self._tts_engine = TTSEngine(tts_config)
+                if self._external_tts_engine is not None:
+                    self._tts_engine = self._external_tts_engine
+                    self._owns_tts_engine = False
+                else:
+                    tts_config = self._tts_config.model_copy(deep=True)
+                    tts_config.language = self.config.target_lang
+                    self._tts_engine = TTSEngine(tts_config)
+                    self._owns_tts_engine = True
                 self._audio_output = AudioOutputManager()
             else:
                 self._tts_engine = None
                 self._audio_output = None
+                self._owns_tts_engine = False
             
             logger.info("组件初始化完成")
             return True
@@ -961,7 +1153,8 @@ class RealtimePipeline:
                         pass
                 if self._tts_engine:
                     try:
-                        self._tts_engine.close()
+                        if self._owns_tts_engine:
+                            self._tts_engine.close()
                     except Exception:
                         pass
                 logger.error(f"启动失败: {e}")
@@ -1008,7 +1201,8 @@ class RealtimePipeline:
                     logger.warning(f"停止音频输出异常: {exc}")
             if self._tts_engine:
                 try:
-                    self._tts_engine.close()
+                    if self._owns_tts_engine:
+                        self._tts_engine.close()
                 except Exception as exc:
                     logger.warning(f"释放TTS资源异常: {exc}")
 
@@ -1017,6 +1211,7 @@ class RealtimePipeline:
             self._streaming_asr = None
             self._mt_engine = None
             self._tts_engine = None
+            self._owns_tts_engine = False
             self._audio_output = None
             self._virtual_device = None
             
@@ -1108,8 +1303,16 @@ def create_pipeline(
     input_device_id: Optional[int] = None,
     input_device_name: Optional[str] = None,
     result_callback: Optional[Callable[[Dict], None]] = None,
+    asr_config: Optional[ASRConfig] = None,
+    mt_config: Optional[MTConfig] = None,
+    tts_config: Optional[TTSConfig] = None,
 ) -> RealtimePipeline:
     """创建实时翻译流水线的便捷函数"""
+    effective_streaming_mode = resolve_streaming_mode(
+        asr_streaming_mode,
+        asr_backend_type=(asr_config.model_type if asr_config else settings.asr.model_type),
+        source_lang=source_lang,
+    )
     config = RealtimeConfig(
         source_lang=source_lang,
         target_lang=target_lang,
@@ -1117,24 +1320,30 @@ def create_pipeline(
         direct_asr_translate=direct_asr_translate,
         output_to_virtual_device=use_virtual_device,
         stream_profile=stream_profile,
-        asr_streaming_mode=asr_streaming_mode,
+        asr_streaming_mode=effective_streaming_mode,
         asr_vad_mode=asr_vad_mode,
         asr_backend_type=settings.asr.model_type,
         asr_partial_decode_interval=asr_partial_decode_interval,
         input_device_id=input_device_id,
         input_device_name=input_device_name,
     )
-    return RealtimePipeline(config, result_callback=result_callback)
+    return RealtimePipeline(
+        config,
+        result_callback=result_callback,
+        asr_config=asr_config,
+        mt_config=mt_config,
+        tts_config=tts_config,
+    )
 
 
 class BidirectionalRealtimeSession:
     """同时运行两条反向实时翻译链路。"""
 
-    def __init__(self, *pipelines: RealtimePipeline):
+    def __init__(self, *pipelines: DirectionWorker):
         self._pipelines = [pipeline for pipeline in pipelines if pipeline is not None]
 
     def start(self) -> bool:
-        started: list[RealtimePipeline] = []
+        started: list[DirectionWorker] = []
         for pipeline in self._pipelines:
             if not pipeline.start():
                 for active in reversed(started):
@@ -1166,18 +1375,26 @@ class BidirectionalRealtimeSession:
 
 
 class SessionOrchestrator:
-    """Phase 1 编排壳层：统一管理多方向流水线，内部仍复用现有 RealtimePipeline。"""
+    """会话编排层：统一管理多方向工作器，默认复用 RealtimePipeline 实现。"""
 
     def __init__(
         self,
-        directions: Dict[str, RealtimePipeline],
+        directions: Dict[str, DirectionWorker],
         *,
+        share_mt_engine: bool = True,
+        share_tts_engine: bool = True,
         restart_enabled: bool = True,
         restart_check_interval_s: float = 0.6,
         restart_cooldown_s: float = 1.5,
         restart_max_attempts: int = 3,
+        restart_backoff_factor: float = 2.0,
+        restart_max_cooldown_s: float = 12.0,
+        restart_open_circuit_s: float = 20.0,
+        restart_healthy_run_s: float = 8.0,
     ):
         self._directions = {name: pipeline for name, pipeline in directions.items() if pipeline is not None}
+        self._share_mt_engine = bool(share_mt_engine)
+        self._share_tts_engine = bool(share_tts_engine)
         self._feedback_lock = threading.Lock()
         self._recent_outputs: Dict[str, deque[tuple[float, str]]] = {
             name: deque(maxlen=40) for name in self._directions.keys()
@@ -1190,10 +1407,32 @@ class SessionOrchestrator:
         self._restart_check_interval_s = max(0.1, float(restart_check_interval_s))
         self._restart_cooldown_s = max(0.1, float(restart_cooldown_s))
         self._restart_max_attempts = max(1, int(restart_max_attempts))
+        self._restart_backoff_factor = max(1.0, float(restart_backoff_factor))
+        self._restart_max_cooldown_s = max(self._restart_cooldown_s, float(restart_max_cooldown_s))
+        self._restart_open_circuit_s = max(0.1, float(restart_open_circuit_s))
+        self._restart_healthy_run_s = max(0.1, float(restart_healthy_run_s))
         self._restart_attempts: Dict[str, int] = {name: 0 for name in self._directions.keys()}
         self._last_restart_ts: Dict[str, float] = {name: 0.0 for name in self._directions.keys()}
+        self._effective_restart_cooldown_s: Dict[str, float] = {
+            name: self._restart_cooldown_s for name in self._directions.keys()
+        }
+        self._feedback_suppressed_count: Dict[str, int] = {name: 0 for name in self._directions.keys()}
+        self._restart_success_count: Dict[str, int] = {name: 0 for name in self._directions.keys()}
+        self._restart_failure_count: Dict[str, int] = {name: 0 for name in self._directions.keys()}
+        self._circuit_open_count: Dict[str, int] = {name: 0 for name in self._directions.keys()}
+        self._circuit_open_until_ts: Dict[str, float] = {
+            name: 0.0 for name in self._directions.keys()
+        }
+        self._last_started_ts: Dict[str, float] = {
+            name: 0.0 for name in self._directions.keys()
+        }
         self._shutdown_event = threading.Event()
         self._monitor_thread: Optional[threading.Thread] = None
+
+        if self._share_mt_engine:
+            self._install_shared_mt_engines()
+        if self._share_tts_engine:
+            self._install_shared_tts_engines()
 
         self._session = BidirectionalRealtimeSession(*self._directions.values())
 
@@ -1210,6 +1449,11 @@ class SessionOrchestrator:
         started = self._session.start()
         if not started:
             return False
+        now = time.time()
+        for name, pipeline in self._directions.items():
+            if pipeline.is_running:
+                self._last_started_ts[name] = now
+                self._circuit_open_until_ts[name] = 0.0
         if self._restart_enabled and self._monitor_thread is None:
             self._monitor_thread = threading.Thread(
                 target=self._monitor_loop,
@@ -1236,6 +1480,18 @@ class SessionOrchestrator:
             summary["direction_name"] = name
             summary["restart_attempts"] = int(self._restart_attempts.get(name, 0))
             summary["restart_enabled"] = self._restart_enabled
+            summary["share_mt_engine"] = self._share_mt_engine
+            summary["share_tts_engine"] = self._share_tts_engine
+            summary["restart_cooldown_s"] = float(
+                self._effective_restart_cooldown_s.get(name, self._restart_cooldown_s)
+            )
+            summary["restart_circuit_open"] = bool(
+                float(self._circuit_open_until_ts.get(name, 0.0)) > time.time()
+            )
+            summary["feedback_suppressed_count"] = int(self._feedback_suppressed_count.get(name, 0))
+            summary["restart_success_count"] = int(self._restart_success_count.get(name, 0))
+            summary["restart_failure_count"] = int(self._restart_failure_count.get(name, 0))
+            summary["restart_circuit_open_count"] = int(self._circuit_open_count.get(name, 0))
             summaries.append(summary)
         return summaries
 
@@ -1265,6 +1521,35 @@ class SessionOrchestrator:
                 lambda source_text, _direction, _name=name: self._accept_source_for_direction(_name, source_text)
             )
 
+    def _install_shared_mt_engines(self) -> None:
+        for name, pipeline in self._directions.items():
+            if not hasattr(pipeline, "_mt_config") or not hasattr(pipeline, "set_mt_engine"):
+                continue
+            try:
+                mt_cfg = pipeline._mt_config.model_copy(deep=True)
+                mt_cfg.source_lang = pipeline.config.source_lang
+                mt_cfg.target_lang = pipeline.config.target_lang
+                shared_engine = SharedMTEngineRegistry.get_or_create(mt_cfg)
+                pipeline.set_mt_engine(shared_engine)
+                logger.debug(f"方向[{name}]已注入共享MT引擎")
+            except Exception as exc:
+                logger.warning(f"方向[{name}]注入共享MT引擎失败，将使用独立实例: {exc}")
+
+    def _install_shared_tts_engines(self) -> None:
+        for name, pipeline in self._directions.items():
+            try:
+                if not getattr(pipeline.config, "enable_tts", False):
+                    continue
+                if not hasattr(pipeline, "_tts_config") or not hasattr(pipeline, "set_tts_engine"):
+                    continue
+                tts_cfg = pipeline._tts_config.model_copy(deep=True)
+                tts_cfg.language = pipeline.config.target_lang
+                shared_engine = SharedTTSEngineRegistry.get_or_create(tts_cfg)
+                pipeline.set_tts_engine(shared_engine)
+                logger.debug(f"方向[{name}]已注入共享TTS引擎")
+            except Exception as exc:
+                logger.warning(f"方向[{name}]注入共享TTS引擎失败，将使用独立实例: {exc}")
+
     def _record_direction_output(self, direction_name: str, text: str) -> None:
         normalized = self._normalize_feedback_text(text)
         if not normalized:
@@ -1289,41 +1574,80 @@ class SessionOrchestrator:
                     if len(candidate) < 6:
                         continue
                     if normalized_source == candidate:
+                        self._feedback_suppressed_count[direction_name] = (
+                            int(self._feedback_suppressed_count.get(direction_name, 0)) + 1
+                        )
                         return False
                     ratio = SequenceMatcher(None, normalized_source, candidate).ratio()
                     if ratio >= self._feedback_similarity:
+                        self._feedback_suppressed_count[direction_name] = (
+                            int(self._feedback_suppressed_count.get(direction_name, 0)) + 1
+                        )
                         return False
         return True
 
     def _monitor_loop(self) -> None:
         while not self._shutdown_event.is_set():
+            now = time.time()
             for name, pipeline in self._directions.items():
                 if self._shutdown_event.is_set():
                     break
                 if pipeline.is_running:
-                    self._restart_attempts[name] = 0
+                    started_ts = float(self._last_started_ts.get(name, 0.0))
+                    if started_ts <= 0.0:
+                        self._last_started_ts[name] = now
+                    elif (now - started_ts) >= self._restart_healthy_run_s:
+                        self._restart_attempts[name] = 0
+                        self._effective_restart_cooldown_s[name] = self._restart_cooldown_s
+                        self._circuit_open_until_ts[name] = 0.0
+                    continue
+
+                circuit_open_until = float(self._circuit_open_until_ts.get(name, 0.0))
+                if now < circuit_open_until:
                     continue
 
                 attempts = int(self._restart_attempts.get(name, 0))
                 if attempts >= self._restart_max_attempts:
+                    self._circuit_open_until_ts[name] = now + self._restart_open_circuit_s
+                    self._restart_attempts[name] = 0
+                    self._effective_restart_cooldown_s[name] = self._restart_cooldown_s
+                    self._circuit_open_count[name] = int(self._circuit_open_count.get(name, 0)) + 1
+                    logger.error(
+                        f"方向[{name}]自动恢复达到上限，进入熔断窗口 "
+                        f"{self._restart_open_circuit_s:.1f}s"
+                    )
                     continue
 
-                now = time.time()
-                if (now - float(self._last_restart_ts.get(name, 0.0))) < self._restart_cooldown_s:
+                effective_cooldown = float(
+                    self._effective_restart_cooldown_s.get(name, self._restart_cooldown_s)
+                )
+                if (now - float(self._last_restart_ts.get(name, 0.0))) < effective_cooldown:
                     continue
 
                 self._last_restart_ts[name] = now
                 self._restart_attempts[name] = attempts + 1
                 logger.warning(
                     f"方向[{name}]已停止，执行自动恢复 "
-                    f"(attempt={self._restart_attempts[name]}/{self._restart_max_attempts})"
+                    f"(attempt={self._restart_attempts[name]}/{self._restart_max_attempts}, "
+                    f"cooldown={effective_cooldown:.2f}s)"
                 )
                 try:
                     if pipeline.start():
                         logger.info(f"方向[{name}]自动恢复成功")
-                        self._restart_attempts[name] = 0
+                        self._last_started_ts[name] = time.time()
+                        self._restart_success_count[name] = int(self._restart_success_count.get(name, 0)) + 1
                     else:
                         logger.warning(f"方向[{name}]自动恢复失败")
+                        self._restart_failure_count[name] = int(self._restart_failure_count.get(name, 0)) + 1
+                        self._effective_restart_cooldown_s[name] = min(
+                            self._restart_max_cooldown_s,
+                            effective_cooldown * self._restart_backoff_factor,
+                        )
                 except Exception as exc:
                     logger.warning(f"方向[{name}]自动恢复异常: {exc}")
+                    self._restart_failure_count[name] = int(self._restart_failure_count.get(name, 0)) + 1
+                    self._effective_restart_cooldown_s[name] = min(
+                        self._restart_max_cooldown_s,
+                        effective_cooldown * self._restart_backoff_factor,
+                    )
             self._shutdown_event.wait(self._restart_check_interval_s)

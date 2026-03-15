@@ -4,6 +4,7 @@ TTS语音合成引擎
 """
 
 import time
+import re
 import tempfile
 from pathlib import Path
 from abc import ABC, abstractmethod
@@ -490,10 +491,59 @@ class TTSEngine:
         except Exception as exc:
             logger.warning(f"TTS后端加载失败，自动降级到Fallback: {exc}")
             self._backend = FallbackTTSBackend(self.config, reason=str(exc))
+
+    def _retry_text_candidates(self, text: str) -> list[str]:
+        raw = (text or "").strip()
+        if not raw:
+            return []
+
+        candidates: list[str] = [raw]
+        # 去掉表情等非常规字符，减少后端返回空音频概率。
+        sanitized = re.sub(r"[^\w\s\u4e00-\u9fff.,!?;:，。！？；：'\"]+", "", raw).strip()
+        if sanitized and sanitized not in candidates:
+            candidates.append(sanitized)
+
+        zh_like = (self.config.language or "").lower().startswith("zh")
+        punct = "。" if zh_like else "."
+        with_punct = sanitized or raw
+        if with_punct and with_punct[-1] not in ".!?。！？":
+            with_punct = f"{with_punct}{punct}"
+            if with_punct not in candidates:
+                candidates.append(with_punct)
+        return candidates
     
     def synthesize(self, text: str) -> SynthesisResult:
         """合成语音"""
-        return self._backend.synthesize(text)
+        candidates = self._retry_text_candidates(text)
+        if not candidates:
+            return self._backend.synthesize(text)
+
+        last_result: Optional[SynthesisResult] = None
+        for idx, candidate in enumerate(candidates):
+            result = self._backend.synthesize(candidate)
+            last_result = result
+            if result.audio is not None and len(result.audio) > 0:
+                if idx > 0:
+                    logger.warning(f"TTS空音频已通过重试恢复: attempt={idx + 1}")
+                return result
+
+        # Piper 等后端在个别环境可能持续返回空音频；尝试 pyttsx3 应急可听输出。
+        if str(self.config.engine or "").lower() != "pyttsx3":
+            try:
+                emergency_cfg = self.config.model_copy(deep=True)
+                emergency_cfg.engine = "pyttsx3"
+                emergency_backend = Pyttsx3Backend(emergency_cfg)
+                emergency_result = emergency_backend.synthesize(str(text or ""))
+                emergency_backend.close()
+                if emergency_result.audio is not None and len(emergency_result.audio) > 0:
+                    logger.warning("TTS空音频已回退到pyttsx3应急输出")
+                    return emergency_result
+            except Exception as exc:
+                logger.warning(f"TTS应急回退pyttsx3失败: {exc}")
+
+        logger.warning("TTS连续返回空音频，回退到静音后端保障链路稳定")
+        fallback = FallbackTTSBackend(self.config, reason="empty-audio-retry-exhausted")
+        return fallback.synthesize(text if isinstance(text, str) else "")
     
     def synthesize_stream(self, text: str) -> Generator[np.ndarray, None, None]:
         """流式合成"""

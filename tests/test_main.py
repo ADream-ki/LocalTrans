@@ -257,12 +257,14 @@ class TestCLI:
         assert forward.config.input_device_id == 3
         assert forward.config.output_to_virtual_device is True
         assert forward.config.direction_label == "我→对方"
+        assert forward.config.asr_streaming_mode == "managed"
 
         assert reverse.config.source_lang == "en"
         assert reverse.config.target_lang == "zh"
         assert reverse.config.input_device_id == 7
         assert reverse.config.output_to_virtual_device is False
         assert reverse.config.direction_label == "对方→我"
+        assert reverse.config.asr_streaming_mode == "legacy"
         assert reverse._mt_config.model_name == "argos-en-zh"
         assert reverse._tts_config.model_name == "piper-zh_CN-huayan"
 

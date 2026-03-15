@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Optional
 
 from loguru import logger
+import numpy as np
 
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QAction, QFont
@@ -51,10 +52,12 @@ from localtrans import __version__
 from localtrans.audio import AudioCapturer, VirtualAudioDevice
 from localtrans.config import ASRConfig, MTConfig, TTSConfig, settings
 from localtrans.mt import TermBankManager
+from localtrans.tts import TTSEngine
 from localtrans.pipeline.realtime import (
     RealtimeConfig,
     RealtimePipeline,
     SessionOrchestrator,
+    resolve_streaming_mode,
 )
 from localtrans.utils import ModelDownloader
 
@@ -85,6 +88,10 @@ class MainWindow(QMainWindow):
         super().__init__()
 
         self._pipeline: Optional[RealtimePipeline | SessionOrchestrator] = None
+        self._runtime_asr_config: Optional[ASRConfig] = None
+        self._runtime_mt_config: Optional[MTConfig] = None
+        self._runtime_tts_config: Optional[TTSConfig] = None
+        self._runtime_run_mode: str = "stable"
         self._config_path = settings.data_dir / "gui_config.json"
         self._config_tab: Optional[QWidget] = None
         self._model_downloader = ModelDownloader()
@@ -307,6 +314,11 @@ class MainWindow(QMainWindow):
         self.download_selected_btn.setMinimumWidth(180)
         self.download_selected_btn.clicked.connect(lambda: self._ensure_selected_models_ready(show_dialog=True))
         download_btn_row.addWidget(self.download_selected_btn)
+
+        self.diagnose_btn = QPushButton("环境诊断")
+        self.diagnose_btn.setMinimumWidth(120)
+        self.diagnose_btn.clicked.connect(self._run_environment_diagnose)
+        download_btn_row.addWidget(self.diagnose_btn)
         download_btn_row.addStretch()
         download_form.addRow("操作", self._wrap_layout(download_btn_row))
 
@@ -351,6 +363,12 @@ class MainWindow(QMainWindow):
         self.runtime_profile_combo.addItem("质量优先", "quality")
         self._set_combo_data(self.runtime_profile_combo, "realtime")
         audio_form.addRow("运行模式", self.runtime_profile_combo)
+
+        self.runtime_mode_combo = QComboBox()
+        self.runtime_mode_combo.addItem("稳定模式", "stable")
+        self.runtime_mode_combo.addItem("前沿实验模式", "frontier")
+        self._set_combo_data(self.runtime_mode_combo, "stable")
+        audio_form.addRow("运行方案", self.runtime_mode_combo)
 
         self.asr_streaming_mode_combo = QComboBox()
         self.asr_streaming_mode_combo.addItem("原始切窗方案", "legacy")
@@ -989,7 +1007,7 @@ class MainWindow(QMainWindow):
     def _collect_gui_config(self) -> dict:
         """采集当前界面配置"""
         return {
-            "config_version": 6,
+            "config_version": 7,
             "source_lang": self.source_lang_combo.currentData(),
             "target_lang": self.target_lang_combo.currentData(),
             "enable_tts": self.tts_checkbox.isChecked(),
@@ -1009,6 +1027,7 @@ class MainWindow(QMainWindow):
             "reverse_input_device_id": self.reverse_input_device_combo.currentData(),
             "output_to_virtual_device": self.output_virtual_checkbox.isChecked(),
             "runtime_profile": self.runtime_profile_combo.currentData(),
+            "runtime_mode": self.runtime_mode_combo.currentData(),
             "asr_streaming_mode": self.asr_streaming_mode_combo.currentData(),
             "asr_vad_mode": self.asr_vad_mode_combo.currentData(),
             "asr_buffer_duration": self.asr_buffer_spin.value(),
@@ -1056,6 +1075,7 @@ class MainWindow(QMainWindow):
         self._set_combo_data(self.reverse_input_device_combo, cfg.get("reverse_input_device_id"))
         self.output_virtual_checkbox.setChecked(bool(cfg.get("output_to_virtual_device", True)))
         self._set_combo_data(self.runtime_profile_combo, cfg.get("runtime_profile", "realtime"))
+        self._set_combo_data(self.runtime_mode_combo, cfg.get("runtime_mode", "stable"))
         self._set_combo_data(self.asr_streaming_mode_combo, cfg.get("asr_streaming_mode", "legacy"))
         default_vad_mode = "energy" if self.asr_streaming_mode_combo.currentData() == "legacy" else "webrtc"
         self._set_combo_data(self.asr_vad_mode_combo, cfg.get("asr_vad_mode", default_vad_mode))
@@ -1172,15 +1192,20 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "加载失败", str(exc))
 
     def _apply_runtime_settings(self) -> RealtimeConfig:
-        """把UI配置应用到运行时 settings，并返回流水线配置"""
+        """把UI配置应用到会话级运行时快照，并返回流水线配置"""
         source_lang = self.source_lang_combo.currentData()
-        settings.asr.model_type = self.asr_backend_combo.currentData()
+        run_mode = self.runtime_mode_combo.currentData() or "stable"
+        asr_cfg = settings.asr.model_copy(deep=True)
+        mt_cfg = settings.mt.model_copy(deep=True)
+        tts_cfg = settings.tts.model_copy(deep=True)
+
+        asr_cfg.model_type = self.asr_backend_combo.currentData()
         asr_model_value = self.asr_model_combo.currentData() or self.asr_model_combo.currentText().strip()
 
-        if not self._is_asr_backend_available(settings.asr.model_type):
-            requested_backend = settings.asr.model_type
+        if not self._is_asr_backend_available(asr_cfg.model_type):
+            requested_backend = asr_cfg.model_type
             fallback_backend = "faster-whisper" if self._is_asr_backend_available("faster-whisper") else "vosk"
-            settings.asr.model_type = fallback_backend
+            asr_cfg.model_type = fallback_backend
             self._set_combo_data(self.asr_backend_combo, fallback_backend)
             if fallback_backend == "faster-whisper":
                 asr_model_value = "small"
@@ -1196,7 +1221,7 @@ class MainWindow(QMainWindow):
             logger.warning(f"ASR后端不可用({requested_backend})，已自动切换为 {fallback_backend}")
             self.statusBar().showMessage(f"ASR后端 {requested_backend} 不可用，已切换为 {fallback_backend}", 4500)
 
-        if settings.asr.model_type == "vosk":
+        if asr_cfg.model_type == "vosk":
             src = (source_lang or "").lower()
             if src.startswith("zh"):
                 recommended_vosk_model = "vosk-model-small-cn-0.22"
@@ -1220,17 +1245,17 @@ class MainWindow(QMainWindow):
             if self.auto_download_checkbox.isChecked():
                 self._set_combo_data(self.asr_download_combo, asr_model_value)
 
-        settings.asr.model_size = asr_model_value
+        asr_cfg.model_size = asr_model_value
         asr_path_candidate = Path(asr_model_value) if asr_model_value else None
-        if settings.asr.model_type == "funasr":
-            settings.asr.model_name = asr_model_value or "FunAudioLLM/SenseVoiceSmall"
+        if asr_cfg.model_type == "funasr":
+            asr_cfg.model_name = asr_model_value or "FunAudioLLM/SenseVoiceSmall"
             if asr_path_candidate and asr_path_candidate.exists():
-                settings.asr.model_path = asr_path_candidate
-            elif settings.asr.model_path and not Path(settings.asr.model_path).exists():
-                settings.asr.model_path = None
-        elif settings.asr.model_type == "qwen3-asr":
+                asr_cfg.model_path = asr_path_candidate
+            elif asr_cfg.model_path and not Path(asr_cfg.model_path).exists():
+                asr_cfg.model_path = None
+        elif asr_cfg.model_type == "qwen3-asr":
             model_ref = asr_model_value or "Qwen/Qwen3-ASR-0.6B"
-            settings.asr.model_size = model_ref
+            asr_cfg.model_size = model_ref
 
             alias_candidates = [str(model_ref)]
             model_ref_lower = str(model_ref).lower()
@@ -1249,19 +1274,19 @@ class MainWindow(QMainWindow):
                         resolved_path = local_path
                         break
 
-            settings.asr.model_path = resolved_path
-            settings.asr.model_name = str(resolved_path) if resolved_path else str(model_ref)
-        elif settings.asr.model_type == "sherpa-onnx":
-            settings.asr.model_name = asr_model_value or "sherpa-onnx-zh-en-zipformer"
+            asr_cfg.model_path = resolved_path
+            asr_cfg.model_name = str(resolved_path) if resolved_path else str(model_ref)
+        elif asr_cfg.model_type == "sherpa-onnx":
+            asr_cfg.model_name = asr_model_value or "sherpa-onnx-zh-en-zipformer"
             if asr_path_candidate and asr_path_candidate.exists():
-                settings.asr.model_path = asr_path_candidate
+                asr_cfg.model_path = asr_path_candidate
             else:
                 local_sherpa = settings.models_dir / "asr" / asr_model_value
-                settings.asr.model_path = local_sherpa if local_sherpa.exists() else None
-        elif settings.asr.model_type == "wenet":
+                asr_cfg.model_path = local_sherpa if local_sherpa.exists() else None
+        elif asr_cfg.model_type == "wenet":
             model_name = asr_model_value or "wenet-u2pp-cn"
-            settings.asr.model_name = model_name
-            settings.asr.model_size = model_name
+            asr_cfg.model_name = model_name
+            asr_cfg.model_size = model_name
 
             resolved_path = None
             if asr_path_candidate and asr_path_candidate.exists():
@@ -1273,29 +1298,32 @@ class MainWindow(QMainWindow):
                         resolved_path = local_path
                         break
 
-            settings.asr.model_path = resolved_path
+            asr_cfg.model_path = resolved_path
         else:
-            settings.asr.model_name = None
+            asr_cfg.model_name = None
             if asr_path_candidate and asr_path_candidate.exists():
-                settings.asr.model_path = asr_path_candidate
-            elif settings.asr.model_type == "faster-whisper":
+                asr_cfg.model_path = asr_path_candidate
+            elif asr_cfg.model_type == "faster-whisper":
                 local_fw = settings.models_dir / "asr" / f"faster-whisper-{asr_model_value}"
-                settings.asr.model_path = local_fw if local_fw.exists() else None
-            elif settings.asr.model_type == "vosk":
+                asr_cfg.model_path = local_fw if local_fw.exists() else None
+            elif asr_cfg.model_type == "vosk":
                 local_vosk = settings.models_dir / "asr" / asr_model_value
-                settings.asr.model_path = local_vosk if local_vosk.exists() else None
+                asr_cfg.model_path = local_vosk if local_vosk.exists() else None
             else:
-                settings.asr.model_path = None
+                asr_cfg.model_path = None
 
-        settings.mt.model_type = self.mt_backend_combo.currentData()
+        if run_mode == "frontier":
+            asr_cfg = self._resolve_frontier_asr(asr_cfg)
+
+        mt_cfg.model_type = self.mt_backend_combo.currentData()
         mt_model = self.mt_model_name_edit.text().strip()
         if mt_model:
-            settings.mt.model_name = mt_model
+            mt_cfg.model_name = mt_model
 
-        settings.tts.engine = self.tts_engine_combo.currentData()
+        tts_cfg.engine = self.tts_engine_combo.currentData()
         tts_model = self.tts_model_name_edit.text().strip()
-        settings.tts.model_name = tts_model or None
-        settings.tts.language = self.target_lang_combo.currentData()
+        tts_cfg.model_name = tts_model or None
+        tts_cfg.language = self.target_lang_combo.currentData()
 
         if self.auto_download_checkbox.isChecked():
             if not self._ensure_selected_models_ready(show_dialog=False):
@@ -1306,16 +1334,16 @@ class MainWindow(QMainWindow):
         asr_buffer = float(self.asr_buffer_spin.value())
         tuning = self._runtime_profile_tuning(profile, asr_buffer)
         direct_asr_translate = bool(self.direct_asr_translate_checkbox.isChecked())
-        if direct_asr_translate and settings.asr.model_type not in {"whisper", "faster-whisper"}:
+        if direct_asr_translate and asr_cfg.model_type not in {"whisper", "faster-whisper"}:
             logger.warning("ASR直译仅支持 whisper/faster-whisper，自动关闭")
             direct_asr_translate = False
         if direct_asr_translate and (self.target_lang_combo.currentData() or "").lower() != "en":
             logger.warning("ASR直译当前仅支持目标英语，自动关闭")
             direct_asr_translate = False
 
-        settings.asr.task = "translate" if direct_asr_translate else "transcribe"
-        settings.asr.beam_size = int(tuning["asr_beam_size"])
-        settings.asr.vad_filter = bool(tuning["asr_backend_vad_filter"])
+        asr_cfg.task = "translate" if direct_asr_translate else "transcribe"
+        asr_cfg.beam_size = int(tuning["asr_beam_size"])
+        asr_cfg.vad_filter = bool(tuning["asr_backend_vad_filter"])
 
         realtime_config = RealtimeConfig(
             source_lang=source_lang,
@@ -1323,7 +1351,11 @@ class MainWindow(QMainWindow):
             enable_tts=self.tts_checkbox.isChecked(),
             direct_asr_translate=direct_asr_translate,
             output_to_virtual_device=self.output_virtual_checkbox.isChecked(),
-            asr_streaming_mode=self.asr_streaming_mode_combo.currentData() or "legacy",
+            asr_streaming_mode=resolve_streaming_mode(
+                self.asr_streaming_mode_combo.currentData() or "legacy",
+                asr_backend_type=asr_cfg.model_type,
+                source_lang=source_lang,
+            ),
             asr_vad_mode=self.asr_vad_mode_combo.currentData() or "webrtc",
             asr_buffer_duration=asr_buffer,
             asr_overlap=float(self.asr_overlap_spin.value()),
@@ -1346,13 +1378,18 @@ class MainWindow(QMainWindow):
             drop_hallucination=bool(tuning["drop_hallucination"]),
             input_device_id=self.input_device_combo.currentData(),
         )
+        self._runtime_asr_config = asr_cfg
+        self._runtime_mt_config = mt_cfg
+        self._runtime_tts_config = tts_cfg
+        self._runtime_run_mode = run_mode
         logger.info(
             "运行配置: "
             f"src={realtime_config.source_lang}, tgt={realtime_config.target_lang}, "
-            f"asr={settings.asr.model_type}/{settings.asr.model_size}, asr_path={settings.asr.model_path}, "
+            f"mode={run_mode}, "
+            f"asr={asr_cfg.model_type}/{asr_cfg.model_size}, asr_path={asr_cfg.model_path}, "
             f"streaming={realtime_config.asr_streaming_mode}/{realtime_config.asr_vad_mode}, "
-            f"mt={settings.mt.model_type}/{settings.mt.model_name}, "
-            f"tts={settings.tts.engine}/{settings.tts.model_name}, "
+            f"mt={mt_cfg.model_type}/{mt_cfg.model_name}, "
+            f"tts={tts_cfg.engine}/{tts_cfg.model_name}, "
             f"profile={realtime_config.stream_profile}, input_device={realtime_config.input_device_id}"
         )
         self.statusBar().showMessage(f"配置已应用（{profile}）", 2500)
@@ -1370,7 +1407,10 @@ class MainWindow(QMainWindow):
         reverse_mt_model = None
         reverse_tts_model = None
 
-        mt_backend = str(settings.mt.model_type or "").lower()
+        mt_cfg = getattr(self, "_runtime_mt_config", None) or settings.mt
+        tts_cfg = getattr(self, "_runtime_tts_config", None) or settings.tts
+
+        mt_backend = str(mt_cfg.model_type or "").lower()
         if mt_backend in {"argos-ct2", "argos"}:
             reverse_mt_model = self._default_mt_model_name(target_lang, source_lang)
             if reverse_mt_model and self.auto_download_checkbox.isChecked():
@@ -1381,7 +1421,7 @@ class MainWindow(QMainWindow):
                 except Exception as exc:
                     logger.warning(f"准备双向MT模型失败({reverse_mt_model}): {exc}")
 
-        tts_engine = str(settings.tts.engine or "").lower()
+        tts_engine = str(tts_cfg.engine or "").lower()
         if tts_engine == "piper":
             reverse_tts_model = self._default_piper_model_name(source_lang)
             if reverse_tts_model and self.auto_download_checkbox.isChecked():
@@ -1412,18 +1452,26 @@ class MainWindow(QMainWindow):
         pipeline_config.input_device_id = input_device_id
         pipeline_config.output_to_virtual_device = output_to_virtual_device
         pipeline_config.direction_label = direction_label
-        pipeline_config.asr_backend_type = settings.asr.model_type
+        asr_template = getattr(self, "_runtime_asr_config", None) or settings.asr
+        mt_template = getattr(self, "_runtime_mt_config", None) or settings.mt
+        tts_template = getattr(self, "_runtime_tts_config", None) or settings.tts
+        pipeline_config.asr_backend_type = asr_template.model_type
+        pipeline_config.asr_streaming_mode = resolve_streaming_mode(
+            pipeline_config.asr_streaming_mode,
+            asr_backend_type=pipeline_config.asr_backend_type,
+            source_lang=source_lang,
+        )
 
-        asr_config = settings.asr.model_copy(deep=True)
+        asr_config = asr_template.model_copy(deep=True)
         asr_config.language = source_lang
 
-        mt_config = settings.mt.model_copy(deep=True)
+        mt_config = mt_template.model_copy(deep=True)
         mt_config.source_lang = source_lang
         mt_config.target_lang = target_lang
         if mt_model_name:
             mt_config.model_name = mt_model_name
 
-        tts_config = settings.tts.model_copy(deep=True)
+        tts_config = tts_template.model_copy(deep=True)
         tts_config.language = target_lang
         if tts_model_name is not None:
             tts_config.model_name = tts_model_name or None
@@ -1466,13 +1514,27 @@ class MainWindow(QMainWindow):
         else:
             tts_label = "off"
 
-        return (
+        base = (
             f"{prefix}{summary.get('source_lang')}->{summary.get('target_lang')} | "
             f"输入{input_label} | 输出{output_label} | "
             f"ASR {summary.get('asr_backend')}/{asr_model} | "
             f"MT {summary.get('mt_backend')}/{mt_model} | "
             f"TTS {tts_label}"
         )
+        if "restart_attempts" in summary:
+            health = (
+                f"RST a={summary.get('restart_attempts', 0)}"
+                f"/ok={summary.get('restart_success_count', 0)}"
+                f"/fail={summary.get('restart_failure_count', 0)}"
+                f"/cb={summary.get('restart_circuit_open_count', 0)}"
+                f"/sup={summary.get('feedback_suppressed_count', 0)}"
+            )
+            share = (
+                f"SH mt={'on' if summary.get('share_mt_engine', False) else 'off'}"
+                f"/tts={'on' if summary.get('share_tts_engine', False) else 'off'}"
+            )
+            base = f"{base} | {health} | {share}"
+        return base
 
     def _update_session_runtime_info(self, runner: Optional[RealtimePipeline | SessionOrchestrator]) -> None:
         if runner is None:
@@ -1518,6 +1580,13 @@ class MainWindow(QMainWindow):
                     realtime_config.source_lang,
                     realtime_config.target_lang,
                 )
+                preflight_checker = getattr(self, "_run_tts_preflight", None)
+                if callable(preflight_checker):
+                    if not preflight_checker(
+                        realtime_config,
+                        reverse_tts_model=reverse_tts_model,
+                    ):
+                        return
                 forward_pipeline = self._create_direction_pipeline(
                     realtime_config,
                     source_lang=realtime_config.source_lang,
@@ -1543,6 +1612,10 @@ class MainWindow(QMainWindow):
                     }
                 )
             else:
+                preflight_checker = getattr(self, "_run_tts_preflight", None)
+                if callable(preflight_checker):
+                    if not preflight_checker(realtime_config):
+                        return
                 self._pipeline = self._create_direction_pipeline(
                     realtime_config,
                     source_lang=realtime_config.source_lang,
@@ -1576,11 +1649,83 @@ class MainWindow(QMainWindow):
             logger.error(f"启动失败: {exc}")
             QMessageBox.critical(self, "错误", f"启动失败: {exc}")
 
+    def _probe_tts_config(self, cfg: TTSConfig, *, label: str) -> tuple[bool, str]:
+        """检查指定TTS配置是否能产出可听音频。"""
+        probe_text = "你好，这是语音可用性测试。" if str(cfg.language or "").lower().startswith("zh") else "Hello, this is a TTS availability test."
+        try:
+            engine = TTSEngine(cfg)
+            try:
+                result = engine.synthesize(probe_text)
+            finally:
+                engine.close()
+        except Exception as exc:
+            return False, f"{label}: 初始化或合成失败({exc})"
+
+        audio = getattr(result, "audio", None)
+        if audio is None or len(audio) == 0:
+            return False, f"{label}: 未生成音频数据"
+
+        try:
+            max_amp = float(np.max(np.abs(audio)))
+        except Exception:
+            max_amp = 0.0
+        duration = float(getattr(result, "duration", 0.0) or 0.0)
+        if max_amp <= 0.0:
+            return False, f"{label}: 输出静音(幅值=0)"
+        if duration <= 0.18 and max_amp <= 1.0:
+            return False, f"{label}: 仅生成兜底静音片段({duration:.2f}s)"
+        return True, ""
+
+    def _run_tts_preflight(self, runtime_cfg: RealtimeConfig, *, reverse_tts_model: Optional[str] = None) -> bool:
+        """启动前做TTS可听性自检，并在失败时明确提示原因。"""
+        if not runtime_cfg.enable_tts:
+            return True
+
+        failed_reasons: list[str] = []
+        base_tts_cfg = (getattr(self, "_runtime_tts_config", None) or settings.tts).model_copy(deep=True)
+
+        forward_cfg = base_tts_cfg.model_copy(deep=True)
+        forward_cfg.language = runtime_cfg.target_lang
+        ok, reason = self._probe_tts_config(forward_cfg, label="正向TTS")
+        if not ok:
+            failed_reasons.append(reason)
+
+        if self.bidirectional_checkbox.isChecked():
+            reverse_cfg = base_tts_cfg.model_copy(deep=True)
+            reverse_cfg.language = runtime_cfg.source_lang
+            if reverse_tts_model is not None:
+                reverse_cfg.model_name = reverse_tts_model
+            ok, reason = self._probe_tts_config(reverse_cfg, label="反向TTS")
+            if not ok:
+                failed_reasons.append(reason)
+
+        if not failed_reasons:
+            return True
+
+        message = (
+            "启动前语音可用性自检未通过:\n"
+            + "\n".join(f"- {item}" for item in failed_reasons)
+            + "\n\n继续启动可能出现“有字幕但无声音”。是否继续？"
+        )
+        self.statusBar().showMessage("TTS自检失败，请确认语音引擎配置", 6000)
+        answer = QMessageBox.question(
+            self,
+            "TTS自检失败",
+            message,
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        return answer == QMessageBox.StandardButton.Yes
+
     def _stop_translation(self) -> None:
         """停止翻译"""
         if self._pipeline:
             self._pipeline.stop()
             self._pipeline = None
+        self._runtime_asr_config = None
+        self._runtime_mt_config = None
+        self._runtime_tts_config = None
+        self._runtime_run_mode = "stable"
 
         self.start_btn.setText("▶ 开始翻译")
         self.start_btn.setStyleSheet("")
@@ -1608,6 +1753,119 @@ class MainWindow(QMainWindow):
         """清空显示"""
         self.source_text.clear()
         self.target_text.clear()
+
+    def _resolve_frontier_asr(self, asr_cfg: ASRConfig) -> ASRConfig:
+        """前沿模式优先链路：Qwen3-ASR > FunASR > faster-whisper-small。"""
+        models_dir = settings.models_dir / "asr"
+        qwen17 = models_dir / "qwen3-asr-1.7b"
+        qwen06 = models_dir / "qwen3-asr-0.6b"
+        funasr_dir = models_dir / "funasr-sensevoice-small"
+        fw_small = models_dir / "faster-whisper-small"
+
+        if self._module_available("funasr"):
+            if qwen17.exists() or qwen06.exists():
+                model_ref = "Qwen/Qwen3-ASR-1.7B" if qwen17.exists() else "Qwen/Qwen3-ASR-0.6B"
+                asr_cfg.model_type = "qwen3-asr"
+                asr_cfg.model_name = model_ref
+                asr_cfg.model_size = model_ref
+                asr_cfg.model_path = qwen17 if qwen17.exists() else (qwen06 if qwen06.exists() else None)
+                self._set_combo_data(self.asr_backend_combo, "qwen3-asr")
+                self._set_combo_data(self.asr_model_combo, model_ref)
+                return asr_cfg
+
+            if funasr_dir.exists():
+                asr_cfg.model_type = "funasr"
+                asr_cfg.model_name = str(funasr_dir)
+                asr_cfg.model_size = str(funasr_dir)
+                asr_cfg.model_path = funasr_dir
+                self._set_combo_data(self.asr_backend_combo, "funasr")
+                self._set_combo_data(self.asr_model_combo, "FunAudioLLM/SenseVoiceSmall")
+                return asr_cfg
+
+        if fw_small.exists():
+            asr_cfg.model_type = "faster-whisper"
+            asr_cfg.model_size = "small"
+            asr_cfg.model_name = None
+            asr_cfg.model_path = fw_small
+            self._set_combo_data(self.asr_backend_combo, "faster-whisper")
+            self._set_combo_data(self.asr_model_combo, "small")
+            return asr_cfg
+
+        return asr_cfg
+
+    def _run_environment_diagnose(self) -> None:
+        """GUI 内执行环境诊断并展示报告。"""
+        import sounddevice as sd
+
+        lines = []
+        src = self.source_lang_combo.currentData()
+        tgt = self.target_lang_combo.currentData()
+        lines.append("LocalTrans 环境诊断报告")
+        lines.append("=" * 56)
+        lines.append(f"语言方向: {src} -> {tgt}")
+        lines.append(f"虚拟声卡: {'可用' if VirtualAudioDevice.check_vb_cable_installed() else '不可用'}")
+
+        try:
+            capturer = AudioCapturer()
+            devices = capturer.list_devices()
+            lines.append(f"输入设备数量: {len(devices)}")
+            lines.append("设备16kHz/1ch支持(前12项):")
+            for idx, dev in enumerate(devices[:12], start=1):
+                dev_id = int(dev["id"])
+                try:
+                    sd.check_input_settings(device=dev_id, samplerate=16000, channels=1, dtype=np.int16)
+                    status = "OK"
+                except Exception as exc:
+                    status = f"FAIL({exc})"
+                lines.append(f"  {idx:02d}. [{dev_id}] {dev['name'][:34]} -> {status}")
+        except Exception as exc:
+            lines.append(f"设备探测失败: {exc}")
+
+        lines.append("")
+        lines.append("关键模块可用性:")
+        for module in ("funasr", "faster_whisper", "whisper", "sherpa_onnx"):
+            lines.append(f"  - {module}: {'可用' if self._module_available(module) else '不可用'}")
+
+        lines.append("")
+        lines.append("TTS可听性探测:")
+        tts_cases = [
+            ("zh", "piper-zh_CN-huayan", "你好，这是中文语音测试。"),
+            ("en", "piper-en_US-lessac", "Hello, this is an English voice test."),
+        ]
+        for lang, model_name, text in tts_cases:
+            cfg = settings.tts.model_copy(deep=True)
+            cfg.engine = "piper"
+            cfg.language = lang
+            cfg.model_name = model_name
+            cfg.model_path = self._resolve_piper_onnx(settings.models_dir / "tts" / model_name)
+            try:
+                engine = TTSEngine(cfg)
+                try:
+                    result = engine.synthesize(text)
+                finally:
+                    engine.close()
+                audio = getattr(result, "audio", None)
+                alen = len(audio) if audio is not None else 0
+                amp = float(np.max(np.abs(audio))) if alen > 0 else 0.0
+                lines.append(f"  - {lang} {model_name}: len={alen}, amp={amp:.2f}, dur={result.duration:.2f}s")
+            except Exception as exc:
+                lines.append(f"  - {lang} {model_name}: FAIL({exc})")
+
+        report = "\n".join(lines)
+        dlg = QDialog(self)
+        dlg.setWindowTitle("环境诊断报告")
+        dlg.resize(840, 560)
+        layout = QVBoxLayout(dlg)
+        text = QTextEdit()
+        text.setReadOnly(True)
+        text.setPlainText(report)
+        layout.addWidget(text)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        buttons.rejected.connect(dlg.reject)
+        buttons.accepted.connect(dlg.accept)
+        layout.addWidget(buttons)
+        self.statusBar().showMessage("环境诊断完成", 3500)
+        dlg.exec()
 
     def _import_term_bank(self) -> None:
         """导入术语库"""
