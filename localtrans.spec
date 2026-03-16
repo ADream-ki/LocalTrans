@@ -84,8 +84,6 @@ hiddenimports = [
     "localtrans.utils",
     "localtrans.utils.monitor",
     "localtrans.utils.model_downloader",
-    "localtrans.gui",
-    "localtrans.gui.app",
     "dataclasses",
     "pydantic",
     "pydantic_settings",

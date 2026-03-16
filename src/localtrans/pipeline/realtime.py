@@ -82,6 +82,67 @@ class SharedMTEngineRegistry:
             return engine
 
 
+class _LockedASREngine:
+    """线程安全的 ASR 代理，允许会话复用重型识别模型。"""
+
+    def __init__(self, engine: ASREngine):
+        self._engine = engine
+        self._lock = threading.Lock()
+
+    def transcribe(self, audio):
+        with self._lock:
+            return self._engine.transcribe(audio)
+
+    def detect_language(self, audio):
+        with self._lock:
+            return self._engine.detect_language(audio)
+
+
+class SharedASREngineRegistry:
+    """进程内 ASR 引擎共享注册表（按配置键缓存）。"""
+
+    _lock = threading.Lock()
+    _engines: Dict[str, _LockedASREngine] = {}
+
+    @classmethod
+    def _normalize_path(cls, value: Optional[Path]) -> str:
+        if value is None:
+            return ""
+        try:
+            return str(Path(value).resolve())
+        except Exception:
+            return str(value)
+
+    @classmethod
+    def _build_key(cls, config: ASRConfig) -> str:
+        return "|".join(
+            [
+                str(getattr(config, "model_type", "") or ""),
+                str(getattr(config, "model_name", "") or ""),
+                cls._normalize_path(getattr(config, "model_path", None)),
+                str(getattr(config, "model_size", "") or ""),
+                str(getattr(config, "language", "") or ""),
+                str(getattr(config, "task", "") or ""),
+                str(getattr(config, "device", "") or ""),
+                str(getattr(config, "compute_type", "") or ""),
+                str(getattr(config, "chunk_length_s", "") or ""),
+                str(getattr(config, "initial_prompt", "") or ""),
+                str(getattr(config, "temperature", "") or ""),
+            ]
+        )
+
+    @classmethod
+    def get_or_create(cls, config: ASRConfig) -> _LockedASREngine:
+        key = cls._build_key(config)
+        with cls._lock:
+            engine = cls._engines.get(key)
+            if engine is not None:
+                return engine
+            engine = _LockedASREngine(ASREngine(config.model_copy(deep=True)))
+            cls._engines[key] = engine
+            return engine
+
+
 class _LockedTTSEngine:
     """线程安全的 TTS 代理，避免共享引擎并发合成导致竞态。"""
 
@@ -171,6 +232,9 @@ class DirectionWorker(Protocol):
     def set_tts_engine(self, tts_engine: Optional[object]) -> None:
         ...
 
+    def set_asr_engine(self, asr_engine: Optional[object]) -> None:
+        ...
+
 
 @dataclass
 class RealtimeConfig:
@@ -208,9 +272,16 @@ class RealtimeConfig:
     direction_label: str = ""
     
     # 音频输出
-    output_device: Optional[str] = None
+    output_mode: str = "virtual"  # virtual, device, system
+    output_device_id: Optional[int] = None
     input_device_id: Optional[int] = None
     input_device_name: Optional[str] = None
+    io_buffer_ms: int = 60
+    input_gain_db: float = 0.0
+    output_gain_db: float = 0.0
+    reuse_asr_engine: bool = True
+    reuse_mt_engine: bool = True
+    reuse_tts_engine: bool = True
 
     def __post_init__(self) -> None:
         profile = (self.stream_profile or "realtime").lower()
@@ -221,6 +292,12 @@ class RealtimeConfig:
         self.asr_vad_mode = (self.asr_vad_mode or "webrtc").strip().lower()
         if self.asr_vad_mode not in {"energy", "webrtc", "silero"}:
             self.asr_vad_mode = "webrtc"
+        self.output_mode = (self.output_mode or "virtual").strip().lower()
+        if self.output_mode not in {"virtual", "device", "system"}:
+            self.output_mode = "virtual"
+        self.io_buffer_ms = int(max(20, min(300, int(self.io_buffer_ms or 60))))
+        self.input_gain_db = float(max(-24.0, min(24.0, float(self.input_gain_db or 0.0))))
+        self.output_gain_db = float(max(-24.0, min(24.0, float(self.output_gain_db or 0.0))))
         self.stream_agreement = max(1, int(self.stream_agreement))
         self.min_asr_confidence = max(0.0, min(1.0, float(self.min_asr_confidence)))
         self.min_cjk_ratio = max(0.0, min(1.0, float(self.min_cjk_ratio)))
@@ -388,10 +465,12 @@ class RealtimePipeline:
         self._tts_config = (tts_config or settings.tts).model_copy(deep=True)
         self._external_mt_engine = mt_engine
         self._external_tts_engine = tts_engine
-        
+        self._external_asr_engine: Optional[object] = None
+
         # 组件
         self._audio_capturer: Optional[AudioCapturer] = None
         self._streaming_asr: Optional[StreamingASR] = None
+        self._asr_engine: Optional[object] = None
         self._mt_engine: Optional[object] = None
         self._tts_engine: Optional[object] = None
         self._owns_tts_engine: bool = False
@@ -435,6 +514,10 @@ class RealtimePipeline:
     def set_tts_engine(self, tts_engine: Optional[object]) -> None:
         """注入外部 TTS 引擎（可用于会话级共享）。"""
         self._external_tts_engine = tts_engine
+
+    def set_asr_engine(self, asr_engine: Optional[object]) -> None:
+        """注入外部 ASR 引擎（可用于会话级共享）。"""
+        self._external_asr_engine = asr_engine
 
     def should_accept_source_text(self, source_text: str) -> bool:
         if not self._source_acceptor:
@@ -966,17 +1049,27 @@ class RealtimePipeline:
             result = self._tts_engine.synthesize(text)
             if result.audio is None or len(result.audio) == 0:
                 return
+            audio = result.audio
+            if self.config.output_gain_db != 0.0:
+                gain = 10.0 ** (self.config.output_gain_db / 20.0)
+                audio = (audio * gain).clip(-1.0, 1.0)
             
-            if self.config.output_to_virtual_device and self._virtual_device:
+            if self.config.output_mode == "virtual" and self._virtual_device:
                 # 输出到虚拟设备
                 self._audio_output.play_to_device(
-                    result.audio,
+                    audio,
                     self._virtual_device.output_device_id,
                     sample_rate=result.sample_rate,
                 )
+            elif self.config.output_mode == "device" and self.config.output_device_id is not None:
+                self._audio_output.play_to_device(
+                    audio,
+                    int(self.config.output_device_id),
+                    sample_rate=result.sample_rate,
+                )
             else:
-                # 直接播放
-                self._audio_output.play(result.audio, sample_rate=result.sample_rate)
+                # 系统默认输出
+                self._audio_output.play(audio, sample_rate=result.sample_rate)
             
         except Exception as e:
             logger.error(f"合成/播放错误: {e}")
@@ -1008,7 +1101,7 @@ class RealtimePipeline:
             logger.info("初始化组件...")
             
             # 检查虚拟设备
-            if self.config.output_to_virtual_device:
+            if self.config.output_mode == "virtual":
                 self._virtual_device = VirtualAudioDevice()
                 if not self._virtual_device.is_available:
                     logger.warning("虚拟设备不可用，将使用默认音频输出")
@@ -1018,9 +1111,14 @@ class RealtimePipeline:
             resolved_input_device = self._resolve_auto_input_device_id()
             if resolved_input_device is not None:
                 self.config.input_device_id = resolved_input_device
+            chunk_size = max(256, int(settings.audio.sample_rate * (self.config.io_buffer_ms / 1000.0)))
             self._audio_capturer = AudioCapturer(
+                sample_rate=settings.audio.sample_rate,
+                channels=settings.audio.channels,
+                chunk_size=chunk_size,
                 device_id=self.config.input_device_id,
                 device_name=self.config.input_device_name,
+                input_gain_db=self.config.input_gain_db,
             )
             
             # 初始化ASR
@@ -1046,8 +1144,16 @@ class RealtimePipeline:
                 if self.config.asr_max_buffer_duration is not None
                 else max(float(self.config.asr_buffer_duration), asr_min_buffer + 0.1)
             )
+            # 初始化ASR（默认复用重型后端，避免会话重建导致内存持续增长）
+            if self._external_asr_engine is not None:
+                self._asr_engine = self._external_asr_engine
+            elif self.config.reuse_asr_engine:
+                self._asr_engine = SharedASREngineRegistry.get_or_create(asr_config)
+            else:
+                self._asr_engine = ASREngine(asr_config)
+
             self._streaming_asr = StreamingASR(
-                asr_engine=ASREngine(asr_config),
+                asr_engine=self._asr_engine,
                 callback=self._on_transcription,
                 buffer_duration=self.config.asr_buffer_duration,
                 overlap_duration=self.config.asr_overlap,
@@ -1068,7 +1174,10 @@ class RealtimePipeline:
                 mt_config = self._mt_config.model_copy(deep=True)
                 mt_config.source_lang = self.config.source_lang
                 mt_config.target_lang = self.config.target_lang
-                self._mt_engine = MTEngine(mt_config)
+                if self.config.reuse_mt_engine:
+                    self._mt_engine = SharedMTEngineRegistry.get_or_create(mt_config)
+                else:
+                    self._mt_engine = MTEngine(mt_config)
              
             # 初始化TTS
             if self.config.enable_tts:
@@ -1078,8 +1187,12 @@ class RealtimePipeline:
                 else:
                     tts_config = self._tts_config.model_copy(deep=True)
                     tts_config.language = self.config.target_lang
-                    self._tts_engine = TTSEngine(tts_config)
-                    self._owns_tts_engine = True
+                    if self.config.reuse_tts_engine:
+                        self._tts_engine = SharedTTSEngineRegistry.get_or_create(tts_config)
+                        self._owns_tts_engine = False
+                    else:
+                        self._tts_engine = TTSEngine(tts_config)
+                        self._owns_tts_engine = True
                 self._audio_output = AudioOutputManager()
             else:
                 self._tts_engine = None
@@ -1209,6 +1322,7 @@ class RealtimePipeline:
             # 显式释放组件，避免重复启动时复用到旧状态
             self._audio_capturer = None
             self._streaming_asr = None
+            self._asr_engine = None
             self._mt_engine = None
             self._tts_engine = None
             self._owns_tts_engine = False
@@ -1243,14 +1357,17 @@ class RealtimePipeline:
         if not self.config.enable_tts:
             output_mode = "disabled"
             output_device_id = None
-        elif self.config.output_to_virtual_device and self._virtual_device and self._virtual_device.output_device_id is not None:
+        elif self.config.output_mode == "virtual" and self._virtual_device and self._virtual_device.output_device_id is not None:
             output_mode = "virtual-device"
             output_device_id = self._virtual_device.output_device_id
-        elif self.config.output_to_virtual_device:
+        elif self.config.output_mode == "virtual":
             output_mode = "speaker-fallback"
             output_device_id = None
+        elif self.config.output_mode == "device":
+            output_mode = "selected-device"
+            output_device_id = self.config.output_device_id
         else:
-            output_mode = "speaker"
+            output_mode = "system-default"
             output_device_id = None
 
         return {
@@ -1258,9 +1375,11 @@ class RealtimePipeline:
             "source_lang": self.config.source_lang,
             "target_lang": self.config.target_lang,
             "input_device_id": self.config.input_device_id,
+            "io_buffer_ms": self.config.io_buffer_ms,
             "output_mode": output_mode,
             "output_device_id": output_device_id,
             "stream_profile": self.config.stream_profile,
+            "io_profile": getattr(settings.audio, "io_profile", "balanced"),
             "asr_streaming_mode": self.config.asr_streaming_mode,
             "asr_vad_mode": self.config.asr_vad_mode,
             "asr_backend": self._asr_config.model_type,

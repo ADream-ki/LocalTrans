@@ -23,6 +23,23 @@ class AudioConfig(BaseModel):
     channels: int = Field(default=1, description="声道数")
     chunk_size: int = Field(default=1024, description="音频块大小")
     format: str = Field(default="int16", description="音频格式")
+
+    # DAW 风格 I/O 选择（-1 表示系统默认）
+    input_device_id: int = Field(default=-1, description="输入设备 ID")
+    output_device_id: int = Field(default=-1, description="输出设备 ID")
+    input_device_name: Optional[str] = Field(default=None, description="输入设备名称（缓存）")
+    output_device_name: Optional[str] = Field(default=None, description="输出设备名称（缓存）")
+
+    # 输出模式：virtual=虚拟声卡，device=指定输出设备，system=系统默认输出
+    output_mode: str = Field(default="virtual", description="音频输出模式")
+
+    # I/O 深度控制
+    io_profile: str = Field(default="balanced", description="I/O 档位: realtime/balanced/studio")
+    io_buffer_ms: int = Field(default=60, description="I/O 缓冲时长毫秒")
+    monitoring_enabled: bool = Field(default=False, description="监听回放开关")
+    input_gain_db: float = Field(default=0.0, description="输入增益(dB)")
+    output_gain_db: float = Field(default=0.0, description="输出增益(dB)")
+    limiter_enabled: bool = Field(default=True, description="输出限幅器开关")
     
     # 虚拟设备配置
     virtual_input_device: Optional[str] = Field(default=None, description="虚拟输入设备名称")
@@ -60,7 +77,7 @@ class ASRConfig(BaseModel):
 class MTConfig(BaseModel):
     """MT机器翻译配置"""
     # 模型配置
-    model_type: str = Field(default="argos-ct2", description="模型类型: argos-ct2, argos, nllb, nllb-ct2, marian")
+    model_type: str = Field(default="argos-ct2", description="模型类型: argos-ct2, argos, nllb, nllb-ct2, marian, loci, loci-enhanced")
     model_name: str = Field(default="argos-zh-en", description="模型名称")
     model_path: Optional[Path] = Field(default=None, description="本地模型路径")
     
@@ -76,6 +93,14 @@ class MTConfig(BaseModel):
     # 术语库
     term_bank_enabled: bool = Field(default=True, description="启用术语库")
     term_bank_path: Optional[Path] = Field(default=None, description="术语库路径")
+    
+    # Loci 配置 (用于 loci 和 loci-enhanced 后端)
+    loci_model_path: Optional[Path] = Field(default=None, description="Loci GGUF 模型路径")
+    loci_n_ctx: int = Field(default=4096, description="Loci 上下文大小")
+    loci_n_gpu_layers: int = Field(default=-1, description="Loci GPU 层数 (-1=全部)")
+    loci_temperature: float = Field(default=0.7, description="Loci 生成温度")
+    loci_timeout_ms: int = Field(default=800, description="Loci 增强翻译超时 (毫秒)")
+    loci_device_id: int = Field(default=-1, description="Loci 设备 ID (-1=自动选择)")
 
 
 class TTSConfig(BaseModel):

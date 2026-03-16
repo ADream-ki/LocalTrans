@@ -132,7 +132,7 @@ def is_model_available(downloader: ModelDownloader, model_name: str) -> bool:
 
 def latest_gui_log() -> Optional[Path]:
     candidates = sorted(
-        settings.logs_dir.glob("localtrans_gui_*.log"),
+        settings.logs_dir.glob("localtrans_*.log"),
         key=lambda path: path.stat().st_mtime,
         reverse=True,
     )
@@ -157,12 +157,12 @@ def print_device(name: str, device: Optional[DeviceCandidate]) -> None:
 
 
 def launch_gui() -> int:
-    gui_exe = ROOT / "dist" / "localtrans-gui.exe"
+    gui_exe = ROOT / "dist" / "localtrans-qml.exe"
     if gui_exe.exists():
         subprocess.Popen([str(gui_exe)], cwd=str(ROOT))
         print(f"已启动 GUI: {gui_exe}")
         return 0
-    subprocess.Popen([sys.executable, "-m", "localtrans.gui.main"], cwd=str(ROOT))
+    subprocess.Popen([sys.executable, "-m", "localtrans.ui.main"], cwd=str(ROOT))
     print("已通过 Python 模块方式启动 GUI")
     return 0
 

@@ -92,11 +92,12 @@ if errorlevel 1 (
 
 REM 安装项目依赖
 echo [INFO] 正在安装项目依赖...
-pip install -e ".[asr,mt,tts,gui]"
+pip install -e ".[asr,mt,tts,qml]"
 
 REM 执行打包
 echo [INFO] 正在打包...
 pyinstaller localtrans.spec --noconfirm
+pyinstaller localtrans-qml.spec --noconfirm
 
 if errorlevel 1 (
     echo [ERROR] 打包失败
@@ -117,7 +118,7 @@ dir dist\*.exe 2>nul
 echo.
 echo 使用方法:
 echo   - localtrans.exe     : 命令行版本
-echo   - localtrans-gui.exe : 图形界面版本
+echo   - localtrans-qml.exe : 图形界面版本
 echo.
 
 REM 清理

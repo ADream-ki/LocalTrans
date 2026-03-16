@@ -20,6 +20,7 @@ ENV/
 
 # Python tooling caches
 .pytest_cache/
+.pytest_tmp/
 .mypy_cache/
 .ruff_cache/
 .pytype/
@@ -34,6 +35,8 @@ htmlcov/
 *.log
 logs/
 run_smoke*.log
+.screens/
+release-assets/
 
 # Local runtime data/models (do not commit)
 .localtrans/
@@ -44,6 +47,12 @@ tmp/
 temp/
 outputs/
 recordings/
+
+# Local test-generated media
+tests/fixtures/audio/*.wav
+tests/fixtures/audio/*.mp3
+tests/fixtures/audio/*.flac
+!tests/fixtures/audio/.gitkeep
 
 # IDE/editor
 .vscode/

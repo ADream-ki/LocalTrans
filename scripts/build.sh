@@ -56,7 +56,7 @@ case $choice in
         # 设置权限
         if [ -d "dist" ]; then
             chmod +x dist/localtrans 2>/dev/null || true
-            chmod +x dist/localtrans-gui 2>/dev/null || true
+            chmod +x dist/localtrans-qml 2>/dev/null || true
         fi
         ;;
     2)
@@ -78,11 +78,12 @@ case $choice in
         
         # 安装项目依赖
         echo "[INFO] 正在安装项目依赖..."
-        pip3 install -e ".[asr,mt,tts,gui]"
+        pip3 install -e ".[asr,mt,tts,qml]"
         
         # 执行打包
         echo "[INFO] 正在打包..."
         pyinstaller localtrans.spec --noconfirm
+        pyinstaller localtrans-qml.spec --noconfirm
         ;;
     *)
         echo -e "${RED}[ERROR] 无效选项${NC}"

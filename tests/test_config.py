@@ -23,6 +23,10 @@ class TestSettings:
         
         assert config.sample_rate == 16000
         assert config.channels == 1
+        assert config.input_device_id == -1
+        assert config.output_device_id == -1
+        assert config.output_mode in {"virtual", "device", "system"}
+        assert config.io_profile in {"realtime", "balanced", "studio"}
     
     def test_asr_config(self):
         """测试ASR配置"""
@@ -59,3 +63,35 @@ class TestSettings:
         assert settings.data_dir.exists()
         assert settings.models_dir.exists()
         assert settings.logs_dir.exists()
+
+    def test_load_persisted_config(self):
+        """测试从 config.json 恢复配置"""
+        import shutil
+
+        data_dir = Path(".pytest_tmp_settings") / "localtrans-data"
+        if data_dir.parent.exists():
+            shutil.rmtree(data_dir.parent)
+        data_dir.mkdir(parents=True, exist_ok=True)
+
+        try:
+            config_file = data_dir / "config.json"
+            config_file.write_text(
+                """
+{
+  "mt": {
+    "model_type": "loci-enhanced",
+    "source_lang": "en",
+    "target_lang": "ja"
+  }
+}
+""".strip(),
+                encoding="utf-8",
+            )
+
+            loaded = Settings(data_dir=data_dir)
+            assert loaded.mt.model_type == "loci-enhanced"
+            assert loaded.mt.source_lang == "en"
+            assert loaded.mt.target_lang == "ja"
+        finally:
+            if data_dir.parent.exists():
+                shutil.rmtree(data_dir.parent)

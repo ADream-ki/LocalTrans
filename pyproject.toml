@@ -86,10 +86,11 @@ resample = [
     "scipy>=1.11.0",
 ]
 
-# GUI界面
-gui = [
-    "PyQt6>=6.6.0",
-    "PyQt6-Qt6>=6.6.0",
+# QML 界面 (新一代跨平台 UI)
+qml = [
+    "PySide6>=6.6.0",
+    "PySide6-Qt6>=6.6.0",
+    "PySide6-Essentials>=6.6.0",
 ]
 
 # 性能监控
@@ -104,7 +105,7 @@ download = [
 
 # 完整安装
 full = [
-    "localtrans[asr,mt,tts,vad,resample,gui,monitor,download]",
+    "localtrans[asr,mt,tts,vad,resample,qml,monitor,download]",
 ]
 
 # 开发工具
@@ -123,11 +124,12 @@ dev = [
 
 [project.scripts]
 localtrans = "localtrans.main:main"
-localtrans-gui = "localtrans.gui.main:run_gui"
+localtrans-qml = "localtrans.ui.main:run_qml_gui"
+localtrans-cli = "localtrans.ui.cli_controller:main"
 
 [project.urls]
-Homepage = "https://github.com/iflow/localtrans"
-Repository = "https://github.com/iflow/localtrans"
+Homepage = "https://github.com/ADream-ki/LocalTrans"
+Repository = "https://github.com/ADream-ki/LocalTrans"
 
 [tool.setuptools.packages.find]
 where = ["src"]

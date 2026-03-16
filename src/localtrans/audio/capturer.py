@@ -46,6 +46,7 @@ class AudioCapturer:
         chunk_size: int = None,
         device_id: Optional[int] = None,
         device_name: Optional[str] = None,
+        input_gain_db: Optional[float] = None,
     ):
         self.sample_rate = sample_rate or settings.audio.sample_rate
         self.channels = channels or settings.audio.channels
@@ -54,6 +55,9 @@ class AudioCapturer:
         self.device_name = device_name or settings.audio.virtual_input_device
         self._requested_sample_rate = int(self.sample_rate)
         self._requested_channels = int(self.channels)
+        self._input_gain_db = float(
+            input_gain_db if input_gain_db is not None else getattr(settings.audio, "input_gain_db", 0.0)
+        )
         self._stream_sample_rate = int(self.sample_rate)
         self._stream_channels = int(self.channels)
         self._device_resolved_id = device_id
@@ -179,6 +183,9 @@ class AudioCapturer:
             logger.warning(f"音频流状态: {status}")
 
         processed = self._normalize_audio(indata)
+        if self._input_gain_db != 0.0 and processed.size > 0:
+            gain = 10.0 ** (self._input_gain_db / 20.0)
+            processed = np.clip(processed * gain, -1.0, 1.0).astype(np.float32)
         if self._stream_sample_rate != self.sample_rate:
             processed = self._resample_linear(
                 processed,
@@ -251,9 +258,18 @@ class AudioCapturer:
                 self._stream.stop()
                 self._stream.close()
                 self._stream = None
+            self._callback = None
+            self._clear_queue()
             
             self._state = CaptureState.IDLE
             logger.info("音频捕获已停止")
+
+    def _clear_queue(self) -> None:
+        try:
+            while True:
+                self._audio_queue.get_nowait()
+        except queue.Empty:
+            return
     
     def pause(self) -> None:
         """暂停捕获"""

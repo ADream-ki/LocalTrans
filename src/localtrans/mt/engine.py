@@ -615,6 +615,226 @@ class ArgosCTranslate2Backend(MTBackend):
         ]
 
 
+class LociMTBackend(MTBackend):
+    """
+    Loci LLM 翻译后端
+    
+    使用 Loci 本地 LLM 引擎进行翻译，支持：
+    - 高质量翻译
+    - 上下文增强
+    - 术语控制
+    - 风格控制
+    """
+    
+    def __init__(self, config: MTConfig):
+        self.config = config
+        self._adapter = None
+        self._load_model()
+    
+    def _load_model(self):
+        """加载 Loci 模型"""
+        try:
+            from localtrans.services.loci import LociAdapter, LociConfig
+            
+            model_path = getattr(self.config, "loci_model_path", None) or self.config.model_path
+            if not model_path:
+                raise ValueError("LociMTBackend 需要指定 loci_model_path 或 model_path (GGUF 模型文件)")
+            
+            loci_config = LociConfig(
+                model_path=str(model_path),
+                n_ctx=getattr(self.config, 'loci_n_ctx', 4096),
+                n_gpu_layers=getattr(self.config, 'loci_n_gpu_layers', -1),
+                max_tokens=self.config.max_length,
+                temperature=getattr(self.config, 'loci_temperature', 0.7),
+                timeout_ms=getattr(self.config, 'loci_timeout_ms', 5000),
+                device_id=getattr(self.config, 'loci_device_id', -1),
+            )
+            
+            self._adapter = LociAdapter(loci_config)
+            
+            if not self._adapter.is_loaded:
+                raise RuntimeError(f"Loci 模型加载失败: {model_path}")
+            
+            logger.info(f"LociMTBackend 初始化完成: {model_path}")
+            
+        except ImportError as e:
+            raise ImportError(
+                "Loci 服务不可用，请确保已正确安装 Loci 动态库"
+            ) from e
+    
+    def _build_translation_prompt(
+        self,
+        text: str,
+        source_lang: str,
+        target_lang: str,
+    ) -> str:
+        """构建翻译 prompt"""
+        lang_names = {
+            "en": "English",
+            "zh": "Chinese",
+            "ja": "Japanese",
+            "ko": "Korean",
+            "fr": "French",
+            "de": "German",
+            "es": "Spanish",
+            "ru": "Russian",
+            "pt": "Portuguese",
+            "it": "Italian",
+            "ar": "Arabic",
+        }
+        
+        src_lang_name = lang_names.get(source_lang.lower(), source_lang)
+        tgt_lang_name = lang_names.get(target_lang.lower(), target_lang)
+        
+        prompt = f"""Translate the following {src_lang_name} text to {tgt_lang_name}.
+Provide only the translation, no explanations or additional text.
+
+Source: {text}
+
+Translation:"""
+        
+        return prompt
+    
+    def translate(self, text: str, source_lang: str, target_lang: str) -> TranslationResult:
+        """翻译文本"""
+        start_time = time.time()
+        
+        from localtrans.services.loci import TranslationContext
+        
+        prompt = self._build_translation_prompt(text, source_lang, target_lang)
+        
+        result = self._adapter.generate(prompt)
+        
+        translated = result.text.strip() if result.text else text
+        
+        # 清理可能的前缀
+        for prefix in ["Translation:", "翻译:", "Result:"]:
+            if translated.startswith(prefix):
+                translated = translated[len(prefix):].strip()
+        
+        logger.debug(f"Loci 翻译完成: 耗时{time.time()-start_time:.2f}s")
+        
+        return TranslationResult(
+            source_text=text,
+            translated_text=translated,
+            source_lang=source_lang,
+            target_lang=target_lang,
+        )
+    
+    def translate_batch(self, texts: List[str], source_lang: str, target_lang: str) -> List[TranslationResult]:
+        """批量翻译"""
+        return [
+            self.translate(text, source_lang, target_lang)
+            for text in texts
+        ]
+
+
+class LociEnhancedMTBackend(MTBackend):
+    """
+    Loci 增强翻译后端
+    
+    实现"快速路径 + Loci 增强"的混合翻译模式：
+    1. 先使用快速 MT 后端 (argos-ct2) 获得初始翻译
+    2. 并行使用 Loci 进行翻译增强
+    3. 如果 Loci 在 deadline 内返回，使用增强结果
+    4. 否则使用快速翻译结果
+    """
+    
+    def __init__(
+        self,
+        config: MTConfig,
+        fast_backend: Optional[MTBackend] = None,
+        deadline_ms: int = 800,
+    ):
+        self.config = config
+        self._fast_backend = fast_backend
+        self._loci_adapter = None
+        self._deadline_ms = deadline_ms
+        self._load_model()
+    
+    def _load_model(self):
+        """加载模型"""
+        # 加载快速后端
+        if self._fast_backend is None:
+            # 默认使用 argos-ct2 作为快速后端
+            self._fast_backend = ArgosCTranslate2Backend(self.config)
+        
+        # 加载 Loci
+        try:
+            from localtrans.services.loci import LociAdapter, LociConfig
+            
+            model_path = getattr(self.config, 'loci_model_path', None) or self.config.model_path
+            if model_path:
+                loci_config = LociConfig(
+                    model_path=str(model_path),
+                    n_ctx=getattr(self.config, 'loci_n_ctx', 4096),
+                    timeout_ms=self._deadline_ms,
+                    n_gpu_layers=getattr(self.config, 'loci_n_gpu_layers', -1),
+                    device_id=getattr(self.config, 'loci_device_id', -1),
+                    temperature=getattr(self.config, 'loci_temperature', 0.7),
+                )
+                self._loci_adapter = LociAdapter(loci_config)
+                logger.info("LociEnhancedMTBackend 初始化完成")
+            else:
+                logger.warning("未配置 Loci 模型路径，将仅使用快速后端")
+                
+        except ImportError:
+            logger.warning("Loci 服务不可用，将仅使用快速后端")
+    
+    def translate(self, text: str, source_lang: str, target_lang: str) -> TranslationResult:
+        """翻译文本（快速路径 + Loci 增强）"""
+        start_time = time.time()
+        
+        # 1. 快速翻译
+        fast_result = self._fast_backend.translate(text, source_lang, target_lang)
+        
+        # 2. 如果 Loci 可用，尝试增强
+        if self._loci_adapter and self._loci_adapter.is_loaded:
+            from localtrans.services.loci import TranslationContext
+            from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
+            
+            context = TranslationContext(
+                source_lang=source_lang,
+                target_lang=target_lang,
+            )
+            
+            # 在独立线程中执行增强
+            with ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(
+                    self._loci_adapter.enhance_translation,
+                    text,
+                    fast_result.translated_text,
+                    context,
+                    self._deadline_ms,
+                )
+                
+                try:
+                    enhanced = future.result(timeout=self._deadline_ms / 1000.0)
+                    if enhanced and enhanced != fast_result.translated_text:
+                        logger.debug(
+                            f"Loci 增强翻译成功: 耗时{time.time()-start_time:.2f}s"
+                        )
+                        return TranslationResult(
+                            source_text=text,
+                            translated_text=enhanced,
+                            source_lang=source_lang,
+                            target_lang=target_lang,
+                        )
+                except FuturesTimeoutError:
+                    logger.debug(f"Loci 增强超时，使用快速结果")
+                except Exception as e:
+                    logger.debug(f"Loci 增强失败: {e}")
+        
+        return fast_result
+    
+    def translate_batch(self, texts: List[str], source_lang: str, target_lang: str) -> List[TranslationResult]:
+        """批量翻译"""
+        return [
+            self.translate(text, source_lang, target_lang)
+            for text in texts
+        ]
+
+
 class MTEngine:
     """
     机器翻译引擎
@@ -627,6 +847,8 @@ class MTEngine:
         "marian": MarianBackend,
         "argos-ct2": ArgosCTranslate2Backend,
         "argos": ArgosTranslateBackend,
+        "loci": LociMTBackend,
+        "loci-enhanced": LociEnhancedMTBackend,
     }
     
     def __init__(

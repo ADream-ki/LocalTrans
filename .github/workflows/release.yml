@@ -1,0 +1,55 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release-build:
+    name: release-build (windows)
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install release build dependencies
+        shell: powershell
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e . --no-deps
+          python -m pip install pyinstaller PySide6 numpy sounddevice soundfile pydantic pydantic-settings loguru rich requests pyttsx3 vosk argostranslate ctranslate2 sentencepiece piper-tts faster-whisper
+
+      - name: Build release executables
+        shell: powershell
+        run: |
+          python -m PyInstaller localtrans.spec --noconfirm --clean
+          python -m PyInstaller localtrans-qml.spec --noconfirm --clean
+
+      - name: Archive artifacts
+        shell: powershell
+        run: |
+          New-Item -ItemType Directory -Force release-assets | Out-Null
+          Copy-Item dist/localtrans.exe release-assets/localtrans.exe -Force
+          Copy-Item dist/localtrans-qml.exe release-assets/localtrans-qml.exe -Force
+          Compress-Archive -Path release-assets/* -DestinationPath release-assets/localtrans-windows.zip -Force
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            release-assets/localtrans.exe
+            release-assets/localtrans-qml.exe
+            release-assets/localtrans-windows.zip
+          generate_release_notes: true
+

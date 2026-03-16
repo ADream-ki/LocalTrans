@@ -303,7 +303,7 @@ class TestRealtimePipeline:
         assert summary["source_lang"] == "zh"
         assert summary["target_lang"] == "en"
         assert summary["input_device_id"] == 9
-        assert summary["output_mode"] == "speaker"
+        assert summary["output_mode"] in {"speaker", "speaker-fallback"}
         assert summary["asr_backend"] == pipeline._asr_config.model_type
 
     def test_bidirectional_session_exposes_runtime_summaries(self):
