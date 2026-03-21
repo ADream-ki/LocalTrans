@@ -1,65 +1,55 @@
-# Python bytecode/cache
-__pycache__/
-*.py[cod]
-*$py.class
-
-# Build and packaging artifacts
-build/
-dist/
-*.egg-info/
-.eggs/
-pip-wheel-metadata/
-*.pyz
-*.pkg
-
-# Virtual environments
-.venv/
-venv/
-env/
-ENV/
-
-# Python tooling caches
-.pytest_cache/
-.pytest_tmp/
-.mypy_cache/
-.ruff_cache/
-.pytype/
-.hypothesis/
-.tox/
-.nox/
-.coverage
-.coverage.*
-htmlcov/
-
-# Logs and runtime traces
-*.log
-logs/
-run_smoke*.log
-.screens/
-release-assets/
-
-# Local runtime data/models (do not commit)
-.localtrans/
-models/
-downloads/
-cache/
-tmp/
-temp/
-outputs/
-recordings/
-
-# Local test-generated media
-tests/fixtures/audio/*.wav
-tests/fixtures/audio/*.mp3
-tests/fixtures/audio/*.flac
-!tests/fixtures/audio/.gitkeep
-
-# IDE/editor
-.vscode/
-.idea/
-*.iml
-
-# OS files
+# OS
 .DS_Store
 Thumbs.db
-desktop.ini
+Desktop.ini
+
+# Editors / IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Node / Vite
+node_modules/
+dist/
+*.tsbuildinfo
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Local logs / runtime dumps
+*.log
+*.out
+*.err
+build.log
+dev.log
+tauri_dev.log
+*.pid
+nul
+
+# Env / secrets
+.env
+.env.*
+!.env.example
+
+# Rust / Cargo / Tauri build artifacts
+target/
+src-tauri/target/
+src-tauri/gen/
+src-tauri/sherpa-docs/
+
+# Temporary / backup files
+*.tmp
+*.temp
+*.bak
+*.orig
+src-tauri/Cargo.toml.bak
+
+# Model assets (large files, do not commit)
+models/
+src-tauri/models/
+**/*.onnx
+**/*.gguf
+**/*.tar.bz2
+**/*.bin

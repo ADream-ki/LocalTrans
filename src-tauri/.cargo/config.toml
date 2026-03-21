@@ -1,0 +1,2 @@
+[env]
+LIBCLANG_PATH = "D:/Program Files (x86)/Microsoft Visual Studio/18/BuildTools/VC/Tools/Llvm/x64/bin"

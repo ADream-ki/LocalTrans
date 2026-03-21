@@ -1,0 +1,22 @@
+{
+  "productName": "LocalTrans",
+  "version": "0.1.0",
+  "identifier": "com.localtrans.app",
+  "build": {
+    "frontendDist": "../dist",
+    "devUrl": "http://localhost:1420",
+    "beforeDevCommand": "npm run dev",
+    "beforeBuildCommand": "npm run build"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "LocalTrans",
+        "width": 1320,
+        "height": 840,
+        "resizable": true,
+        "decorations": false
+      }
+    ]
+  }
+}

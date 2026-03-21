@@ -10,46 +10,78 @@ permissions:
   contents: write
 
 jobs:
-  release-build:
-    name: release-build (windows)
+  build-and-release:
+    name: Build & Release (Windows)
     runs-on: windows-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup Python
-        uses: actions/setup-python@v5
+      - name: Setup Node
+        uses: actions/setup-node@v4
         with:
-          python-version: "3.11"
-          cache: pip
+          node-version: "22"
+          cache: npm
 
-      - name: Install release build dependencies
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Set LIBCLANG_PATH
         shell: powershell
         run: |
-          python -m pip install --upgrade pip
-          python -m pip install -e . --no-deps
-          python -m pip install pyinstaller PySide6 numpy sounddevice soundfile pydantic pydantic-settings loguru rich requests pyttsx3 vosk argostranslate ctranslate2 sentencepiece piper-tts faster-whisper
+          $candidates = @(
+            "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Tools\Llvm\x64\bin",
+            "C:\Program Files\Microsoft Visual Studio\2022\BuildTools\VC\Tools\Llvm\x64\bin",
+            "C:\Program Files\LLVM\bin"
+          )
+          $found = $false
+          foreach ($p in $candidates) {
+            if (Test-Path (Join-Path $p "libclang.dll")) {
+              "LIBCLANG_PATH=$p" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+              $found = $true
+              break
+            }
+          }
+          if (-not $found) { throw "libclang.dll not found in known locations." }
 
-      - name: Build release executables
-        shell: powershell
-        run: |
-          python -m PyInstaller localtrans.spec --noconfirm --clean
-          python -m PyInstaller localtrans-qml.spec --noconfirm --clean
+      - name: Install frontend dependencies
+        run: npm ci
 
-      - name: Archive artifacts
+      - name: Build app
+        run: npm run tauri build
+
+      - name: Prepare release assets
         shell: powershell
         run: |
           New-Item -ItemType Directory -Force release-assets | Out-Null
-          Copy-Item dist/localtrans.exe release-assets/localtrans.exe -Force
-          Copy-Item dist/localtrans-qml.exe release-assets/localtrans-qml.exe -Force
-          Compress-Archive -Path release-assets/* -DestinationPath release-assets/localtrans-windows.zip -Force
+          $bundleDir = "src-tauri/target/release/bundle"
+          if (-not (Test-Path $bundleDir)) {
+            throw "Bundle directory not found: $bundleDir"
+          }
+
+          # Installer assets (MSI / NSIS setup EXE)
+          $installers = Get-ChildItem -Path $bundleDir -Recurse -File | Where-Object {
+            $_.Extension -eq ".msi" -or ($_.Extension -eq ".exe" -and $_.Name -match "setup|installer")
+          }
+          if (-not $installers -or $installers.Count -eq 0) {
+            throw "No installer artifacts found under $bundleDir"
+          }
+          foreach ($f in $installers) {
+            Copy-Item $f.FullName (Join-Path "release-assets" $f.Name) -Force
+          }
+
+          # Portable asset (single EXE in zip)
+          $portableRoot = "release-assets/localtrans-portable"
+          New-Item -ItemType Directory -Force -Path $portableRoot | Out-Null
+          Copy-Item src-tauri/target/release/localtrans.exe (Join-Path $portableRoot "localtrans.exe") -Force
+          Compress-Archive -Path "$portableRoot/*" -DestinationPath "release-assets/localtrans-portable-windows-x64.zip" -Force
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: |
-            release-assets/localtrans.exe
-            release-assets/localtrans-qml.exe
-            release-assets/localtrans-windows.zip
           generate_release_notes: true
-
+          files: |
+            release-assets/*.msi
+            release-assets/*setup*.exe
+            release-assets/*installer*.exe
+            release-assets/localtrans-portable-windows-x64.zip

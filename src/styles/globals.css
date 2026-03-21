@@ -1,0 +1,115 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  font-family: 'Segoe UI Variable', 'Microsoft YaHei UI', 'Noto Sans SC', sans-serif;
+  line-height: 1.5;
+  font-weight: 400;
+  color-scheme: light;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html, body, #root {
+  height: 100%;
+  width: 100%;
+  overflow: hidden;
+}
+
+body {
+  background: linear-gradient(135deg, #F7F9FC 0%, #EEF2F7 100%);
+}
+
+/* Glass Card Effect */
+@layer components {
+  .glass-card {
+    @apply bg-white/70 backdrop-blur-xl border border-white/50 shadow-lg;
+    background: linear-gradient(135deg, rgba(255,255,255,0.9) 0%, rgba(255,255,255,0.7) 100%);
+  }
+
+  .glass-card-hover {
+    @apply glass-card transition-all duration-normal;
+  }
+
+  .glass-card-hover:hover {
+    @apply shadow-xl border-primary/30;
+    transform: scale(1.01);
+  }
+
+  .status-indicator {
+    @apply w-2 h-2 rounded-full;
+  }
+
+  .status-indicator.running {
+    @apply bg-success;
+    animation: pulse 1.5s ease-in-out infinite;
+  }
+
+  .status-indicator.stopped {
+    @apply bg-text-tertiary;
+  }
+
+  .btn-primary {
+    @apply px-l py-s bg-primary text-white rounded-medium font-medium
+           transition-all duration-fast hover:bg-primary/90 active:scale-95;
+  }
+
+  .btn-secondary {
+    @apply px-l py-s bg-bg-secondary text-text-primary rounded-medium font-medium
+           border border-bg-tertiary transition-all duration-fast
+           hover:bg-bg-tertiary active:scale-95;
+  }
+
+  .input-field {
+    @apply w-full px-m py-s bg-white border border-bg-tertiary rounded-medium
+           text-text-primary placeholder:text-text-tertiary
+           focus:outline-none focus:border-primary focus:ring-2 focus:ring-primary/20
+           transition-all duration-fast;
+  }
+
+  .select-field {
+    @apply input-field cursor-pointer appearance-none;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%2364748B' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'%3E%3C/polyline%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 12px center;
+    padding-right: 40px;
+  }
+}
+
+/* Scrollbar */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #CBD5E1;
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #94A3B8;
+}
+
+/* Animation */
+@keyframes pulse {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.5;
+  }
+}
