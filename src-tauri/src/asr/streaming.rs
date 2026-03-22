@@ -6,6 +6,7 @@
 
 use crate::asr::{AsrConfig, AsrEngine, AsrError, PartialTranscription, Transcription};
 use crate::audio::{AudioBuffer, VadDetector, VadResult};
+use std::path::{Path, PathBuf};
 
 #[cfg(all(feature = "sherpa-backend", not(feature = "mock-asr")))]
 use crate::asr::SherpaAsrEngine;
@@ -19,10 +20,11 @@ use std::time::Instant;
 use tracing::{debug, error, info, warn};
 
 /// Streaming ASR state
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum StreamingState {
     /// Idle, waiting for speech
+    #[default]
     Idle,
     /// Speech detected, accumulating audio
     SpeechDetected,
@@ -32,12 +34,6 @@ pub enum StreamingState {
     Finalizing,
     /// Error state
     Error,
-}
-
-impl Default for StreamingState {
-    fn default() -> Self {
-        Self::Idle
-    }
 }
 
 impl std::fmt::Display for StreamingState {
@@ -208,7 +204,7 @@ impl StreamingAsrEngine {
         #[cfg(all(feature = "sherpa-backend", not(feature = "mock-asr")))]
         let asr = {
             // Use model path from AsrConfig or default location
-            let config = if asr_config.model_path.as_os_str().is_empty() {
+            let mut config = if asr_config.model_path.as_os_str().is_empty() {
                 // Use default model path from environment or app data
                 let model_path = std::env::var("SHERPA_MODEL_PATH")
                     .map(std::path::PathBuf::from)
@@ -226,6 +222,25 @@ impl StreamingAsrEngine {
             } else {
                 asr_config
             };
+
+            let preferred_lang = config.language.as_deref().unwrap_or("auto");
+            let selected = pick_preferred_asr_model_dir(&config.model_path, preferred_lang);
+            if selected != config.model_path {
+                tracing::info!(
+                    preferred_lang = %preferred_lang,
+                    from = %config.model_path.display(),
+                    to = %selected.display(),
+                    "selected preferred ASR model directory"
+                );
+                config.model_path = selected;
+            } else {
+                tracing::info!(
+                    preferred_lang = %preferred_lang,
+                    selected = %config.model_path.display(),
+                    "using ASR model directory"
+                );
+            }
+
             SherpaAsrEngine::init(config)?
         };
 
@@ -608,6 +623,130 @@ impl StreamingAsrEngine {
     }
 }
 
+fn pick_preferred_asr_model_dir(base_dir: &Path, preferred_lang: &str) -> PathBuf {
+    let mut candidates: Vec<PathBuf> = Vec::new();
+    if is_valid_asr_model_dir(base_dir) {
+        candidates.push(base_dir.to_path_buf());
+    }
+
+    if let Ok(entries) = std::fs::read_dir(base_dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() && is_valid_asr_model_dir(&path) {
+                candidates.push(path);
+            }
+        }
+    }
+
+    if candidates.is_empty() {
+        return base_dir.to_path_buf();
+    }
+
+    let lang = preferred_lang.to_ascii_lowercase();
+    let prefer_zh = matches!(lang.as_str(), "zh" | "zh-cn" | "zh-tw" | "yue");
+    let prefer_stable_for_en = matches!(lang.as_str(), "en" | "en-us" | "en-gb")
+        && std::env::var("LOCALTRANS_PREFER_STABLE_ASR_FOR_EN")
+            .map(|v| v != "0" && !v.eq_ignore_ascii_case("false"))
+            .unwrap_or(true);
+
+    let mut best: Option<(i32, u64, PathBuf)> = None;
+    for c in candidates {
+        let name = c.to_string_lossy().to_ascii_lowercase();
+        let has_paraformer = has_paraformer_files(&c);
+        let has_zipformer = has_zipformer_files(&c);
+        let mut score = 0i32;
+
+        if prefer_zh {
+            if has_paraformer {
+                score += 8;
+            }
+            if name.contains("zh") || name.contains("trilingual") || name.contains("multi") {
+                score += 4;
+            }
+            if name.contains("-en") || name.contains("_en") {
+                score -= 4;
+            }
+        } else {
+            if prefer_stable_for_en {
+                // On some Windows hosts, specific English zipformer packs can hard-abort
+                // in native runtime. Prefer paraformer/multilingual packs for robustness.
+                if has_paraformer {
+                    score += 8;
+                }
+                if name.contains("zh") || name.contains("multi") || name.contains("trilingual") {
+                    score += 4;
+                }
+                if name.contains("-en") || name.contains("_en") {
+                    score -= 4;
+                }
+            }
+            if has_zipformer {
+                score += 4;
+            }
+            if name.contains("-en") || name.contains("_en") {
+                score += 2;
+            }
+        }
+
+        let size = dir_size(&c);
+        match &best {
+            Some((best_score, best_size, _))
+                if *best_score > score || (*best_score == score && *best_size >= size) => {}
+            _ => best = Some((score, size, c)),
+        }
+    }
+
+    best.map(|(_, _, p)| p).unwrap_or_else(|| base_dir.to_path_buf())
+}
+
+fn is_valid_asr_model_dir(dir: &Path) -> bool {
+    has_zipformer_files(dir) || has_paraformer_files(dir)
+}
+
+fn has_zipformer_files(dir: &Path) -> bool {
+    dir.join("tokens.txt").exists()
+        && has_prefix_onnx(dir, "encoder")
+        && has_prefix_onnx(dir, "decoder")
+        && has_prefix_onnx(dir, "joiner")
+}
+
+fn has_paraformer_files(dir: &Path) -> bool {
+    dir.join("tokens.txt").exists()
+        && (dir.join("model.int8.onnx").exists() || dir.join("model.onnx").exists())
+}
+
+fn has_prefix_onnx(dir: &Path, prefix: &str) -> bool {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return false;
+    };
+    entries.flatten().any(|entry| {
+        let p = entry.path();
+        if !p.is_file() {
+            return false;
+        }
+        let name = p.file_name().and_then(|s| s.to_str()).unwrap_or("");
+        name.starts_with(prefix) && name.ends_with(".onnx")
+    })
+}
+
+fn dir_size(path: &Path) -> u64 {
+    let Ok(entries) = std::fs::read_dir(path) else {
+        return 0;
+    };
+    let mut total = 0u64;
+    for entry in entries.flatten() {
+        let p = entry.path();
+        if let Ok(meta) = entry.metadata() {
+            if meta.is_file() {
+                total += meta.len();
+            } else if meta.is_dir() {
+                total += dir_size(&p);
+            }
+        }
+    }
+    total
+}
+
 /// Result from streaming ASR processing
 #[derive(Debug, Clone)]
 pub enum StreamingResult {
@@ -708,8 +847,8 @@ impl AudioChunker {
             // Put back overlap samples
             if self.overlap_size > 0 && self.buffer.len() < self.overlap_size {
                 let overlap_start = chunk.len().saturating_sub(self.overlap_size);
-                for i in overlap_start..chunk.len() {
-                    self.buffer.push_front(chunk[i]);
+                for sample in chunk.iter().skip(overlap_start).rev() {
+                    self.buffer.push_front(*sample);
                 }
             }
             Some(chunk)
@@ -792,7 +931,7 @@ mod tests {
         assert!(chunk1.is_some());
 
         // Check that overlap was preserved
-        assert!(chunker.len() > 0);
+        assert!(!chunker.is_empty());
     }
 
     #[test]

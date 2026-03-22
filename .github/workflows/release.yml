@@ -47,8 +47,12 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
-      - name: Build app
-        run: npm run tauri build
+      - name: Build installer (NSIS)
+        run: npm run tauri build -- --bundles nsis
+
+      - name: Build installer (MSI, optional)
+        continue-on-error: true
+        run: npm run tauri build -- --bundles msi
 
       - name: Prepare release assets
         shell: powershell
@@ -59,21 +63,31 @@ jobs:
             throw "Bundle directory not found: $bundleDir"
           }
 
-          # Installer assets (MSI / NSIS setup EXE)
+          # Installer assets (NSIS setup EXE is required, MSI optional)
           $installers = Get-ChildItem -Path $bundleDir -Recurse -File | Where-Object {
             $_.Extension -eq ".msi" -or ($_.Extension -eq ".exe" -and $_.Name -match "setup|installer")
           }
           if (-not $installers -or $installers.Count -eq 0) {
             throw "No installer artifacts found under $bundleDir"
           }
+          $hasNsis = $false
           foreach ($f in $installers) {
+            if ($f.Extension -eq ".exe" -and $f.Name -match "setup|installer") {
+              $hasNsis = $true
+            }
             Copy-Item $f.FullName (Join-Path "release-assets" $f.Name) -Force
+          }
+          if (-not $hasNsis) {
+            throw "No NSIS setup EXE found under $bundleDir"
           }
 
           # Portable asset (single EXE in zip)
           $portableRoot = "release-assets/localtrans-portable"
           New-Item -ItemType Directory -Force -Path $portableRoot | Out-Null
           Copy-Item src-tauri/target/release/localtrans.exe (Join-Path $portableRoot "localtrans.exe") -Force
+          if (Test-Path "src-tauri/target/release/localtrans-cli.exe") {
+            Copy-Item src-tauri/target/release/localtrans-cli.exe (Join-Path $portableRoot "localtrans-cli.exe") -Force
+          }
           Compress-Archive -Path "$portableRoot/*" -DestinationPath "release-assets/localtrans-portable-windows-x64.zip" -Force
 
       - name: Create GitHub Release

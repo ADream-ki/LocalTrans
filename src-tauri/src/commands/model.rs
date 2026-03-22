@@ -1,5 +1,13 @@
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
+use crate::logging::default_log_dir;
+
+const URL_SHERPA_MODELS: &str = "https://k2-fsa.github.io/sherpa/onnx/pretrained_models/index.html";
+const URL_SHERPA_ASR: &str = "https://k2-fsa.github.io/sherpa/onnx/pretrained_models/offline-transducer/index.html";
+const URL_SHERPA_TTS: &str = "https://k2-fsa.github.io/sherpa/onnx/tts/pretrained_models/index.html";
+const URL_LOCI_GGUF: &str = "https://huggingface.co/models?library=gguf&sort=downloads";
+const URL_PIPER: &str = "https://github.com/rhasspy/piper";
+const URL_NLLB: &str = "https://huggingface.co/facebook/nllb-200-distilled-600M";
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -17,6 +25,16 @@ pub struct RuntimeStatus {
     pub asr: RuntimeComponentStatus,
     pub translation: RuntimeComponentStatus,
     pub vad: RuntimeComponentStatus,
+    pub loci_unhealthy: bool,
+    pub loci_unhealthy_remaining_sec: u64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LogStatus {
+    pub log_dir: String,
+    pub exists: bool,
+    pub files: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -51,6 +69,12 @@ pub fn list_models(model_type: Option<String>) -> Result<Vec<ModelInfo>, String>
         models
     };
 
+    tracing::info!(
+        models_dir = %models_dir.display(),
+        total = filtered.len(),
+        "model list queried"
+    );
+
     Ok(filtered)
 }
 
@@ -62,7 +86,9 @@ pub fn get_models_dir() -> Result<String, String> {
         std::fs::create_dir_all(&dir)
             .map_err(|e| format!("Failed to create models directory: {}", e))?;
     }
-    Ok(dir.to_string_lossy().to_string())
+    let path = dir.to_string_lossy().to_string();
+    tracing::info!(models_dir = %path, "models directory queried");
+    Ok(path)
 }
 
 /// Check whether runtime-required models are present and where to put them.
@@ -77,39 +103,48 @@ pub fn get_runtime_status() -> Result<RuntimeStatus, String> {
             .map_err(|e| format!("Failed to create models directory: {}", e))?;
     }
 
-    // ASR (Sherpa ZipFormer)
+    // ASR (Sherpa ZipFormer / ParaFormer)
     let asr_root = models_dir.join("asr");
     let asr_dir = find_sherpa_asr_model_dir(&asr_root);
     let asr = match asr_dir {
         Some(dir) => RuntimeComponentStatus {
             ready: true,
             path: dir.to_string_lossy().to_string(),
-            message: "ASR 模型已就绪 (sherpa zipformer)".to_string(),
+            message: "ASR 模型已就绪 (sherpa zipformer/paraformer)".to_string(),
             action: None,
         },
         None => RuntimeComponentStatus {
             ready: false,
             path: asr_root.to_string_lossy().to_string(),
-            message: "未找到 ASR 模型。请将 sherpa zipformer 模型文件放入 asr/ (包含 tokens.txt + encoder/decoder/joiner*.onnx)".to_string(),
-            action: Some("打开【模型】页并导入 ASR 模型".to_string()),
+            message: "未找到 ASR 模型。请将 sherpa zipformer/paraformer 模型文件放入 asr/。".to_string(),
+            action: Some("打开【模型】页下载推荐 ASR 模型并解压到 asr/".to_string()),
         },
     };
 
     // Translation (Loci GGUF)
     let loci_root = models_dir.join("loci");
     let loci_model = find_default_loci_model(&loci_root);
+    let (loci_unhealthy, loci_unhealthy_remaining_sec) = loci_unhealthy_state();
     let translation = match loci_model {
         Some(path) => RuntimeComponentStatus {
             ready: true,
             path: path.to_string_lossy().to_string(),
-            message: "翻译模型已就绪 (Loci GGUF)".to_string(),
-            action: None,
+            message: if loci_unhealthy {
+                "检测到 Loci 最近多次失败，已临时降级为 NLLB（稍后自动恢复）".to_string()
+            } else {
+                "翻译模型已就绪 (Loci GGUF)".to_string()
+            },
+            action: if loci_unhealthy {
+                Some("当前建议使用 NLLB；等待熔断窗口结束后可重试 Loci".to_string())
+            } else {
+                None
+            },
         },
         None => RuntimeComponentStatus {
-            ready: false,
+            ready: true,
             path: loci_root.to_string_lossy().to_string(),
-            message: "未找到翻译模型。请将 .gguf 文件放入 loci/ (本地 LLM)".to_string(),
-            action: Some("打开【模型】页并导入 Loci GGUF 模型".to_string()),
+            message: "未找到 Loci 模型，当前将使用内置翻译引擎（建议导入 .gguf 以提升质量）".to_string(),
+            action: Some("可选：打开【模型】页导入 Loci GGUF 模型".to_string()),
         },
     };
 
@@ -131,12 +166,65 @@ pub fn get_runtime_status() -> Result<RuntimeStatus, String> {
         }
     };
 
-    Ok(RuntimeStatus {
+    let status = RuntimeStatus {
         models_dir: models_dir.to_string_lossy().to_string(),
         asr,
         translation,
         vad,
-    })
+        loci_unhealthy,
+        loci_unhealthy_remaining_sec,
+    };
+
+    tracing::info!(
+        models_dir = %status.models_dir,
+        asr_ready = status.asr.ready,
+        asr_path = %status.asr.path,
+        translation_ready = status.translation.ready,
+        translation_path = %status.translation.path,
+        vad_ready = status.vad.ready,
+        vad_path = %status.vad.path,
+        loci_unhealthy = status.loci_unhealthy,
+        loci_unhealthy_remaining_sec = status.loci_unhealthy_remaining_sec,
+        "runtime status checked"
+    );
+
+    Ok(status)
+}
+
+/// Return current log directory and recent files for diagnostics upload.
+#[tauri::command]
+pub fn get_log_status() -> Result<LogStatus, String> {
+    let dir = default_log_dir();
+    let exists = dir.exists();
+    let mut files: Vec<String> = Vec::new();
+
+    if exists {
+        if let Ok(entries) = std::fs::read_dir(&dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_file() {
+                    files.push(path.to_string_lossy().to_string());
+                }
+            }
+        }
+    }
+
+    files.sort();
+    files.reverse();
+
+    let status = LogStatus {
+        log_dir: dir.to_string_lossy().to_string(),
+        exists,
+        files: files.into_iter().take(10).collect(),
+    };
+
+    tracing::info!(
+        log_dir = %status.log_dir,
+        file_count = status.files.len(),
+        "log status checked"
+    );
+
+    Ok(status)
 }
 
 #[tauri::command]
@@ -147,10 +235,15 @@ pub async fn download_model(
     let _ = model_type;
     // For now we open the download page in the default browser.
     let url = match model_id.as_str() {
-        "asr:sherpa" => Some("https://k2-fsa.github.io/sherpa/onnx/pretrained_models/index.html"),
-        "loci:gguf" => Some("https://huggingface.co/models?library=gguf&sort=downloads"),
-        "tts:piper" => Some("https://github.com/rhasspy/piper"),
-        "mt:nllb" => Some("https://huggingface.co/facebook/nllb-200-distilled-600M"),
+        "asr:sherpa" => Some(URL_SHERPA_ASR),
+        "asr:sherpa-zh-paraformer" => Some(URL_SHERPA_MODELS),
+        "asr:sherpa-en-zipformer" => Some(URL_SHERPA_MODELS),
+        "asr:sherpa-multi-zipformer" => Some(URL_SHERPA_MODELS),
+        "loci:gguf" => Some(URL_LOCI_GGUF),
+        "loci:qwen2.5-0.5b" => Some("https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF"),
+        "tts:sherpa-melo" => Some(URL_SHERPA_TTS),
+        "tts:piper" => Some(URL_PIPER),
+        "mt:nllb" => Some(URL_NLLB),
         _ => None,
     }
     .ok_or_else(|| format!("No download URL for model id: {}", model_id))?;
@@ -253,12 +346,21 @@ fn list_loci_models(models_dir: &Path) -> Vec<ModelInfo> {
     if models.is_empty() {
         models.push(ModelInfo {
             id: "loci:gguf".to_string(),
-            name: "Loci GGUF 模型 (导入)".to_string(),
+            name: "Loci GGUF 模型索引（推荐）".to_string(),
             model_type: "loci".to_string(),
             size: "-".to_string(),
             status: "not_downloaded".to_string(),
             path: Some(dir.to_string_lossy().to_string()),
-            download_url: Some("https://huggingface.co/models?library=gguf&sort=downloads".to_string()),
+            download_url: Some(URL_LOCI_GGUF.to_string()),
+        });
+        models.push(ModelInfo {
+            id: "loci:qwen2.5-0.5b".to_string(),
+            name: "Qwen2.5-0.5B-Instruct-GGUF（轻量）".to_string(),
+            model_type: "loci".to_string(),
+            size: "~0.4-0.8 GB".to_string(),
+            status: "not_downloaded".to_string(),
+            path: Some(dir.to_string_lossy().to_string()),
+            download_url: Some("https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF".to_string()),
         });
     }
 
@@ -270,10 +372,10 @@ fn list_asr_models(models_dir: &Path) -> Vec<ModelInfo> {
     let mut models = Vec::new();
 
     // Model directly under asr/
-    if has_sherpa_asr_files(&dir) {
+    if has_sherpa_any_asr_files(&dir) {
         models.push(ModelInfo {
             id: "asr:default".to_string(),
-            name: "ASR (sherpa)".to_string(),
+            name: "ASR (sherpa，本地已就绪)".to_string(),
             model_type: "asr".to_string(),
             size: format_bytes(dir_size(&dir)),
             status: "ready".to_string(),
@@ -290,7 +392,7 @@ fn list_asr_models(models_dir: &Path) -> Vec<ModelInfo> {
                 if !path.is_dir() {
                     continue;
                 }
-                if !has_sherpa_asr_files(&path) {
+                if !has_sherpa_any_asr_files(&path) {
                     continue;
                 }
 
@@ -316,14 +418,39 @@ fn list_asr_models(models_dir: &Path) -> Vec<ModelInfo> {
     if models.is_empty() {
         models.push(ModelInfo {
             id: "asr:sherpa".to_string(),
-            name: "Sherpa ASR 模型 (导入)".to_string(),
+            name: "Sherpa ASR 模型索引（推荐）".to_string(),
             model_type: "asr".to_string(),
             size: "-".to_string(),
             status: "not_downloaded".to_string(),
             path: Some(dir.to_string_lossy().to_string()),
-            download_url: Some(
-                "https://k2-fsa.github.io/sherpa/onnx/pretrained_models/index.html".to_string(),
-            ),
+            download_url: Some(URL_SHERPA_MODELS.to_string()),
+        });
+        models.push(ModelInfo {
+            id: "asr:sherpa-zh-paraformer".to_string(),
+            name: "中文 Paraformer（低延时）".to_string(),
+            model_type: "asr".to_string(),
+            size: "~200 MB".to_string(),
+            status: "not_downloaded".to_string(),
+            path: Some(dir.to_string_lossy().to_string()),
+            download_url: Some(URL_SHERPA_MODELS.to_string()),
+        });
+        models.push(ModelInfo {
+            id: "asr:sherpa-en-zipformer".to_string(),
+            name: "英文 Zipformer（高准确）".to_string(),
+            model_type: "asr".to_string(),
+            size: "~300 MB".to_string(),
+            status: "not_downloaded".to_string(),
+            path: Some(dir.to_string_lossy().to_string()),
+            download_url: Some(URL_SHERPA_MODELS.to_string()),
+        });
+        models.push(ModelInfo {
+            id: "asr:sherpa-multi-zipformer".to_string(),
+            name: "多语 Zipformer（通用）".to_string(),
+            model_type: "asr".to_string(),
+            size: "~300-600 MB".to_string(),
+            status: "not_downloaded".to_string(),
+            path: Some(dir.to_string_lossy().to_string()),
+            download_url: Some(URL_SHERPA_MODELS.to_string()),
         });
     }
 
@@ -331,7 +458,7 @@ fn list_asr_models(models_dir: &Path) -> Vec<ModelInfo> {
 }
 
 fn find_sherpa_asr_model_dir(asr_root: &Path) -> Option<PathBuf> {
-    if has_sherpa_asr_files(asr_root) {
+    if has_sherpa_any_asr_files(asr_root) {
         return Some(asr_root.to_path_buf());
     }
 
@@ -342,7 +469,7 @@ fn find_sherpa_asr_model_dir(asr_root: &Path) -> Option<PathBuf> {
         if !path.is_dir() {
             continue;
         }
-        if !has_sherpa_asr_files(&path) {
+        if !has_sherpa_any_asr_files(&path) {
             continue;
         }
         let size = dir_size(&path);
@@ -380,11 +507,27 @@ fn find_default_loci_model(dir: &Path) -> Option<PathBuf> {
 }
 
 fn list_tts_models(models_dir: &Path) -> Vec<ModelInfo> {
-    let dir = models_dir.join("tts").join("piper");
+    let piper_dir = models_dir.join("tts").join("piper");
+    let sherpa_dir = models_dir.join("tts").join("sherpa").join("vits-melo-tts-zh_en");
     let mut models = Vec::new();
 
-    if dir.exists() {
-        if let Ok(entries) = std::fs::read_dir(&dir) {
+    if sherpa_dir.exists()
+        && (sherpa_dir.join("model.int8.onnx").exists() || sherpa_dir.join("model.onnx").exists())
+        && sherpa_dir.join("tokens.txt").exists()
+    {
+        models.push(ModelInfo {
+            id: "tts:sherpa-melo-local".to_string(),
+            name: "Sherpa Melo 离线音色（本地已就绪）".to_string(),
+            model_type: "tts".to_string(),
+            size: format_bytes(dir_size(&sherpa_dir)),
+            status: "ready".to_string(),
+            path: Some(sherpa_dir.to_string_lossy().to_string()),
+            download_url: None,
+        });
+    }
+
+    if piper_dir.exists() {
+        if let Ok(entries) = std::fs::read_dir(&piper_dir) {
             for entry in entries.flatten() {
                 let path = entry.path();
                 if !path.is_file() {
@@ -421,13 +564,22 @@ fn list_tts_models(models_dir: &Path) -> Vec<ModelInfo> {
 
     if models.is_empty() {
         models.push(ModelInfo {
+            id: "tts:sherpa-melo".to_string(),
+            name: "Sherpa Melo 离线 TTS（推荐）".to_string(),
+            model_type: "tts".to_string(),
+            size: "~100 MB".to_string(),
+            status: "not_downloaded".to_string(),
+            path: Some(sherpa_dir.to_string_lossy().to_string()),
+            download_url: Some(URL_SHERPA_TTS.to_string()),
+        });
+        models.push(ModelInfo {
             id: "tts:piper".to_string(),
             name: "Piper 离线 TTS (可选)".to_string(),
             model_type: "tts".to_string(),
             size: "-".to_string(),
             status: "not_downloaded".to_string(),
-            path: Some(dir.to_string_lossy().to_string()),
-            download_url: Some("https://github.com/rhasspy/piper".to_string()),
+            path: Some(piper_dir.to_string_lossy().to_string()),
+            download_url: Some(URL_PIPER.to_string()),
         });
     }
 
@@ -436,19 +588,29 @@ fn list_tts_models(models_dir: &Path) -> Vec<ModelInfo> {
 
 fn list_mt_models(models_dir: &Path) -> Vec<ModelInfo> {
     let dir = models_dir.join("mt");
-    // Currently not implemented; provide a placeholder.
-    vec![ModelInfo {
-        id: "mt:nllb".to_string(),
-        name: "NLLB 翻译模型 (未接入)".to_string(),
-        model_type: "mt".to_string(),
-        size: "-".to_string(),
-        status: "not_downloaded".to_string(),
-        path: Some(dir.to_string_lossy().to_string()),
-        download_url: Some("https://huggingface.co/facebook/nllb-200-distilled-600M".to_string()),
-    }]
+    vec![
+        ModelInfo {
+            id: "mt:builtin".to_string(),
+            name: "内置翻译引擎（开箱即用）".to_string(),
+            model_type: "mt".to_string(),
+            size: "-".to_string(),
+            status: "ready".to_string(),
+            path: Some(dir.to_string_lossy().to_string()),
+            download_url: None,
+        },
+        ModelInfo {
+            id: "mt:nllb".to_string(),
+            name: "NLLB-200 600M（可选）".to_string(),
+            model_type: "mt".to_string(),
+            size: "~1.3 GB".to_string(),
+            status: "not_downloaded".to_string(),
+            path: Some(dir.to_string_lossy().to_string()),
+            download_url: Some(URL_NLLB.to_string()),
+        },
+    ]
 }
 
-fn has_sherpa_asr_files(dir: &Path) -> bool {
+fn has_sherpa_zipformer_asr_files(dir: &Path) -> bool {
     if !dir.exists() || !dir.is_dir() {
         return false;
     }
@@ -458,6 +620,20 @@ fn has_sherpa_asr_files(dir: &Path) -> bool {
     }
 
     has_prefix_onnx(dir, "encoder") && has_prefix_onnx(dir, "decoder") && has_prefix_onnx(dir, "joiner")
+}
+
+fn has_sherpa_paraformer_asr_files(dir: &Path) -> bool {
+    if !dir.exists() || !dir.is_dir() {
+        return false;
+    }
+    if !dir.join("tokens.txt").exists() {
+        return false;
+    }
+    dir.join("model.int8.onnx").exists() || dir.join("model.onnx").exists()
+}
+
+fn has_sherpa_any_asr_files(dir: &Path) -> bool {
+    has_sherpa_zipformer_asr_files(dir) || has_sherpa_paraformer_asr_files(dir)
 }
 
 fn has_prefix_onnx(dir: &Path, prefix: &str) -> bool {
@@ -521,6 +697,42 @@ fn format_bytes(bytes: u64) -> String {
     } else {
         format!("{} B", bytes)
     }
+}
+
+fn localtrans_data_dir() -> Result<PathBuf, String> {
+    let base = dirs::data_local_dir()
+        .ok_or_else(|| "Cannot determine data directory".to_string())?;
+    Ok(base.join("LocalTrans"))
+}
+
+fn loci_unhealthy_marker_path() -> Result<PathBuf, String> {
+    Ok(localtrans_data_dir()?.join("loci-unhealthy-until.txt"))
+}
+
+fn now_unix_ms() -> u64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let dur = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default();
+    dur.as_millis() as u64
+}
+
+fn loci_unhealthy_state() -> (bool, u64) {
+    let Ok(path) = loci_unhealthy_marker_path() else {
+        return (false, 0);
+    };
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return (false, 0);
+    };
+    let Ok(until_ms) = text.trim().parse::<u64>() else {
+        return (false, 0);
+    };
+    let now = now_unix_ms();
+    if now >= until_ms {
+        return (false, 0);
+    }
+    let remain_sec = until_ms.saturating_sub(now) / 1000;
+    (true, remain_sec)
 }
 
 fn open_external(url: &str) -> Result<(), String> {

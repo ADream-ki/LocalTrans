@@ -128,30 +128,46 @@ fn test_translation_latency() -> anyhow::Result<()> {
     {
         use localtrans_lib::translation::LociTranslator;
         use localtrans_lib::translation::Translator;
-        use std::path::Path;
+        use std::path::PathBuf;
         
-        // Loci 模型路径
-        let loci_path = Path::new("../../Loci");
-        
-        if !loci_path.exists() {
-            println!("Loci 路径不存在: {}", loci_path.display());
+        let loci_dir = dirs::data_local_dir()
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join("LocalTrans")
+            .join("models")
+            .join("loci");
+        let loci_path = std::fs::read_dir(&loci_dir)
+            .ok()
+            .and_then(|entries| {
+                entries
+                    .filter_map(|e| e.ok())
+                    .map(|e| e.path())
+                    .find(|p| {
+                        p.extension()
+                            .and_then(|e| e.to_str())
+                            .map(|e| e.eq_ignore_ascii_case("gguf"))
+                            == Some(true)
+                    })
+            });
+
+        let Some(loci_path) = loci_path else {
+            println!("未找到 Loci GGUF 模型: {}", loci_dir.display());
             println!("跳过翻译测试");
             return Ok(());
-        }
+        };
         
         println!("初始化 Loci 翻译引擎...");
         
         let start = Instant::now();
-        match LociTranslator::init(loci_path) {
+        match LociTranslator::init(&loci_path) {
             Ok(mut translator) => {
                 let load_time = start.elapsed();
                 println!("翻译引擎加载时间: {:.2?}", load_time);
                 
                 // 测试翻译延迟
-                let test_texts = vec![
-                    ("你好，世界", "zho_Hans", "eng_Latn"),
-                    ("这是一个测试句子，用于测量翻译延迟。", "zho_Hans", "eng_Latn"),
-                    ("人工智能正在改变我们的生活方式。", "zho_Hans", "eng_Latn"),
+                let test_texts = [
+                    ("你好，世界", "zh", "en"),
+                    ("这是一个测试句子，用于测量翻译延迟。", "zh", "en"),
+                    ("人工智能正在改变我们的生活方式。", "zh", "en"),
                 ];
                 
                 let mut times = Vec::new();
@@ -278,7 +294,7 @@ fn test_tts_latency() -> anyhow::Result<()> {
                 println!("模型加载时间: {:.2?}", load_time);
                 
                 // 测试合成延迟
-                let test_texts = vec![
+                let test_texts = [
                     "你好",
                     "这是一个测试",
                     "人工智能正在改变我们的生活",

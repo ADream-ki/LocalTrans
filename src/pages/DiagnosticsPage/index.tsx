@@ -35,6 +35,15 @@ interface RuntimeStatus {
   vad: RuntimeComponentStatus;
 }
 
+interface TtsSystemDoctorPlaybackResult {
+  systemOk: boolean;
+  systemDetail: string;
+  reasonText: string;
+  reasonAudioPath?: string | null;
+  reasonAudioEngine: string;
+  playDevice?: string | null;
+}
+
 // Sample texts for translation testing
 const SAMPLE_TEXTS = [
   { text: "Hello, how are you today?", source: "en", target: "zh", expected: "你好，今天怎么样？" },
@@ -51,7 +60,7 @@ function DiagnosticsPage() {
   const [testOutput, setTestOutput] = useState<string>("");
   const [isRecording, setIsRecording] = useState(false);
   
-  const { ttsVoice, ttsRate, ttsEngine, ttsVolume, ttsOutputDevice } = useSettingsStore();
+  const { ttsVoice, ttsRate, ttsEngine, ttsVolume, ttsOutputDevice, targetLanguage } = useSettingsStore();
 
   useEffect(() => {
     loadDiagnostics();
@@ -236,12 +245,15 @@ function DiagnosticsPage() {
         results.push(`[${sample.source}->${sample.target}] "${sample.text}"`);
         results.push(`  → "${translated.text}" (${Math.round(latency)}ms)`);
         results.push(`  期望: "${sample.expected}"`);
+        setTestOutput(results.join("\n"));
         
         successCount++;
       } catch (error) {
         results.push(`翻译失败: ${error}`);
+        setTestOutput(results.join("\n"));
       }
       results.push("");
+      setTestOutput(results.join("\n"));
     }
     
     const avgLatency = totalLatency / SAMPLE_TEXTS.length;
@@ -380,6 +392,50 @@ function DiagnosticsPage() {
     setIsRunningTest(null);
   };
 
+  const testSystemDoctorPlayback = async () => {
+    setIsRunningTest("tts-doctor");
+    setTestOutput("正在执行 System TTS 诊断并播放原因语音...");
+    try {
+      const result = await invoke<TtsSystemDoctorPlaybackResult>(
+        "run_tts_system_doctor_playback",
+        {
+          request: {
+            outputDevice: ttsOutputDevice || null,
+            voice: ttsVoice || "sherpa-melo-female",
+            outWav: null,
+            language: targetLanguage || "zh",
+          },
+        }
+      );
+      const msg = [
+        `System TTS 状态: ${result.systemOk ? "可用" : "不可用"}`,
+        `详情: ${result.systemDetail}`,
+        `原因语音引擎: ${result.reasonAudioEngine}`,
+        `播放设备: ${result.playDevice || "默认输出设备"}`,
+      ].join("\n");
+      setTestResults((prev) => ({
+        ...prev,
+        ttsDoctor: {
+          success: true,
+          message: "System TTS 诊断播报完成",
+          details: msg,
+        },
+      }));
+      setTestOutput(msg);
+    } catch (error) {
+      setTestResults((prev) => ({
+        ...prev,
+        ttsDoctor: {
+          success: false,
+          message: "System TTS 诊断播报失败",
+          details: String(error),
+        },
+      }));
+      setTestOutput(`System TTS 诊断播报失败: ${error}`);
+    }
+    setIsRunningTest(null);
+  };
+
   return (
     <div className="h-full overflow-y-auto p-l">
       <div className="max-w-4xl mx-auto space-y-l">
@@ -464,6 +520,18 @@ function DiagnosticsPage() {
                 <Play size={16} />
               )}
               测试完整流程
+            </button>
+            <button
+              onClick={testSystemDoctorPlayback}
+              disabled={isRunningTest !== null}
+              className={`btn-secondary flex items-center justify-center gap-s ${isRunningTest === "tts-doctor" ? "opacity-50" : ""}`}
+            >
+              {isRunningTest === "tts-doctor" ? (
+                <Loader2 size={16} className="animate-spin" />
+              ) : (
+                <Volume2 size={16} />
+              )}
+              System TTS 诊断播报
             </button>
           </div>
 

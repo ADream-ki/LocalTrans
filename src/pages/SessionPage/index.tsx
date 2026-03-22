@@ -66,16 +66,21 @@ interface RuntimeStatus {
   asr: RuntimeComponentStatus;
   translation: RuntimeComponentStatus;
   vad: RuntimeComponentStatus;
+  lociUnhealthy?: boolean;
+  lociUnhealthyRemainingSec?: number;
 }
 
 interface PipelineStatsPayload {
-  type: "stats";
+  type?: "stats";
   total_audio_duration_ms: number;
   speech_duration_ms: number;
   transcription_count: number;
   translation_count: number;
   average_latency_ms: number;
-  timestamp: string;
+  asr_average_latency_ms?: number;
+  translation_average_latency_ms?: number;
+  tts_average_latency_ms?: number;
+  timestamp?: string;
 }
 
 interface CustomVoiceRequest {
@@ -102,6 +107,14 @@ interface TtsResult {
   success: boolean;
 }
 
+interface DirectionalTranslationInfo {
+  source_text: string;
+  target_text: string;
+  source_lang: string;
+  target_lang: string;
+  confidence: number;
+}
+
 function SessionPage() {
   const {
     isRunning,
@@ -116,6 +129,7 @@ function SessionPage() {
     translationEngine,
     audioDevices,
     selectedInputDevice,
+    selectedPeerInputDevice,
     startSession,
     stopSession,
     pauseSession,
@@ -124,7 +138,9 @@ function SessionPage() {
     setTargetLang,
     setBidirectional,
     setInputDevice,
+    setPeerInputDevice,
     setAudioDevices,
+    setTranslationEngine,
   } = useSessionStore();
 
   const {
@@ -132,7 +148,18 @@ function SessionPage() {
     ttsEngine,
     ttsAutoPlay,
     ttsOutputDevice,
+    peerTtsOutputDevice,
     setTtsOutputDevice,
+    setPeerTtsOutputDevice,
+    streamTranslationIntervalMs,
+    streamTranslationMinChars,
+    streamTtsIntervalMs,
+    streamTtsMinChars,
+    setStreamTranslationIntervalMs,
+    setStreamTranslationMinChars,
+    setStreamTtsIntervalMs,
+    setStreamTtsMinChars,
+    setTranslationEngine: setSettingsTranslationEngine,
   } = useSettingsStore();
 
   const { setActiveTab } = useUiStore();
@@ -140,6 +167,7 @@ function SessionPage() {
   const [isCompact, setIsCompact] = useState(false);
   const [isSpeaking, setIsSpeaking] = useState(false);
   const lastSpokenTextRef = useRef("");
+  const lastStreamSpeakAtRef = useRef(0);
   const [ttsOutputDevices, setTtsOutputDevices] = useState<
     { id: string; name: string; is_default: boolean }[]
   >([]);
@@ -178,6 +206,14 @@ function SessionPage() {
     };
   }, []);
 
+  // If loci is temporarily unhealthy, auto fallback to nllb to avoid repeated freezes/crashes.
+  useEffect(() => {
+    if (!runtimeStatus?.lociUnhealthy) return;
+    if (translationEngine !== "loci") return;
+    setTranslationEngine("nllb");
+    setSettingsTranslationEngine("nllb");
+  }, [runtimeStatus?.lociUnhealthy, translationEngine, setTranslationEngine, setSettingsTranslationEngine]);
+
   useEffect(() => {
     let cancelled = false;
 
@@ -213,6 +249,31 @@ function SessionPage() {
             setInputDevice(defaultInput.id);
           }
         }
+        if (!current.selectedPeerInputDevice) {
+          const peerInput =
+            mapped.find(
+              (x) =>
+                x.isInput &&
+                x.id !==
+                  ((current.selectedInputDevice ||
+                    mapped.find((d) => d.isInput && d.isDefault)?.id ||
+                    mapped.find((d) => d.isInput)?.id ||
+                    "") as string) &&
+                x.isVirtual
+            ) ||
+            mapped.find(
+              (x) =>
+                x.isInput &&
+                x.id !==
+                  ((current.selectedInputDevice ||
+                    mapped.find((d) => d.isInput && d.isDefault)?.id ||
+                    mapped.find((d) => d.isInput)?.id ||
+                    "") as string)
+            );
+          if (peerInput) {
+            setPeerInputDevice(peerInput.id);
+          }
+        }
       })
       .catch((err) => {
         console.error("Failed to load audio devices:", err);
@@ -222,7 +283,7 @@ function SessionPage() {
     return () => {
       cancelled = true;
     };
-  }, [setAudioDevices, setInputDevice]);
+  }, [setAudioDevices, setInputDevice, setPeerInputDevice]);
 
   useEffect(() => {
     let cancelled = false;
@@ -243,7 +304,7 @@ function SessionPage() {
   }, []);
 
   // Speak text using TTS
-  const speakText = useCallback(async (text: string) => {
+  const speakText = useCallback(async (text: string, outputDeviceOverride?: string | null) => {
     const settings = useSettingsStore.getState();
     if (!text.trim() || !settings.ttsEnabled) return;
 
@@ -259,7 +320,7 @@ function SessionPage() {
       engine: settings.ttsEngine,
       rate: settings.ttsRate,
       volume: settings.ttsVolume,
-      outputDevice: settings.ttsOutputDevice,
+      outputDevice: outputDeviceOverride ?? settings.ttsOutputDevice,
     };
 
     if (
@@ -290,6 +351,24 @@ function SessionPage() {
     }
   }, []);
 
+  const mergeIncremental = useCallback((prev: string, next: string) => {
+    const p = (prev || "").trim();
+    const n = (next || "").trim();
+    if (!p) return n;
+    if (!n) return p;
+    if (n.startsWith(p)) return n;
+    if (p.startsWith(n)) return p;
+    let overlap = 0;
+    const max = Math.min(p.length, n.length);
+    for (let i = max; i >= 1; i -= 1) {
+      if (p.slice(-i) === n.slice(0, i)) {
+        overlap = i;
+        break;
+      }
+    }
+    return overlap > 0 ? `${p}${n.slice(overlap)}` : `${p} ${n}`;
+  }, []);
+
   // Listen for backend events (pipeline + TTS)
   useEffect(() => {
     const unlisten: Array<Promise<() => void>> = [];
@@ -315,8 +394,9 @@ function SessionPage() {
         confidence: number;
         timestamp: string;
       }>("pipeline:partial-transcription", (event) => {
-        useSessionStore.getState().setCurrentSourceText(event.payload.text);
-        useSessionStore.getState().setIsProcessing(true);
+        const st = useSessionStore.getState();
+        st.setCurrentSourceText(mergeIncremental(st.currentSourceText, event.payload.text));
+        st.setIsProcessing(true);
       }),
 
       listen<{
@@ -327,8 +407,9 @@ function SessionPage() {
         confidence: number;
         timestamp: string;
       }>("pipeline:final-transcription", (event) => {
-        useSessionStore.getState().setCurrentSourceText(event.payload.text);
-        useSessionStore.getState().setIsProcessing(true);
+        const st = useSessionStore.getState();
+        st.setCurrentSourceText(mergeIncremental(st.currentSourceText, event.payload.text));
+        st.setIsProcessing(true);
       }),
 
       listen<{
@@ -342,32 +423,66 @@ function SessionPage() {
         timestamp: string;
       }>("pipeline:translation", (event) => {
         const p = event.payload;
+        const isStreaming = !!p.id && p.id.startsWith("stream-");
         const ts = new Date(p.timestamp).toLocaleTimeString("zh-CN", {
           hour: "2-digit",
           minute: "2-digit",
           second: "2-digit",
         });
 
-        useSessionStore.getState().setCurrentTexts(p.source_text, p.target_text);
-        useSessionStore.getState().setIsProcessing(false);
-        useSessionStore.getState().addToHistory({
-          id: p.id,
-          sourceText: p.source_text,
-          translatedText: p.target_text,
-          sourceLang: p.source_lang,
-          targetLang: p.target_lang,
-          timestamp: ts,
-          lociEnhanced: useSessionStore.getState().translationEngine === "loci",
-        });
+        const st = useSessionStore.getState();
+        const mergedSource = isStreaming
+          ? mergeIncremental(st.currentSourceText, p.source_text)
+          : p.source_text;
+        const mergedTarget = isStreaming
+          ? mergeIncremental(st.currentTranslatedText, p.target_text)
+          : p.target_text;
+        st.setCurrentTexts(mergedSource, mergedTarget);
+        st.setIsProcessing(isStreaming);
+        if (!isStreaming) {
+          st.addToHistory({
+            id: p.id,
+            sourceText: mergedSource,
+            translatedText: mergedTarget,
+            sourceLang: p.source_lang,
+            targetLang: p.target_lang,
+            timestamp: ts,
+            lociEnhanced: st.translationEngine === "loci",
+          });
+        }
 
         const s = useSettingsStore.getState();
+        const now = Date.now();
+        const streamMinChars = Math.max(2, s.streamTtsMinChars ?? 12);
+        const streamInterval = Math.max(500, s.streamTtsIntervalMs ?? 1500);
+        const streamSpeakReady =
+          !isStreaming ||
+          ((/[。！？.!?]$/.test(p.target_text) || p.target_text.length >= streamMinChars) &&
+            now - lastStreamSpeakAtRef.current >= streamInterval);
         if (
           s.ttsEnabled &&
           s.ttsAutoPlay &&
-          p.target_text &&
-          p.target_text !== lastSpokenTextRef.current
+          streamSpeakReady &&
+          mergedTarget &&
+          mergedTarget !== lastSpokenTextRef.current
         ) {
-          speakText(p.target_text);
+          const forwardOutput = s.peerTtsOutputDevice ?? s.ttsOutputDevice;
+          if (isStreaming) lastStreamSpeakAtRef.current = now;
+          speakText(mergedTarget, forwardOutput);
+        }
+      }),
+
+      listen<{
+        type: "bidirectionalTranslation";
+        forward?: DirectionalTranslationInfo | null;
+        backward?: DirectionalTranslationInfo | null;
+        timestamp: string;
+      }>("pipeline:bidirectional-translation", (event) => {
+        const p = event.payload;
+        const s = useSettingsStore.getState();
+        if (!s.ttsEnabled || !s.ttsAutoPlay) return;
+        if (p.backward?.target_text && p.backward.target_text !== lastSpokenTextRef.current) {
+          speakText(p.backward.target_text, s.ttsOutputDevice);
         }
       }),
 
@@ -397,7 +512,28 @@ function SessionPage() {
         p.then((fn) => fn()).catch(() => {});
       });
     };
-  }, [speakText]);
+  }, [mergeIncremental, speakText]);
+
+  // Poll session stats so CLI worker sessions also show latency in GUI.
+  useEffect(() => {
+    let stopped = false;
+    const tick = async () => {
+      try {
+        const stats = await invoke<PipelineStatsPayload>("get_session_stats");
+        if (!stopped) setPipelineStats(stats);
+      } catch {
+        // ignore polling errors
+      }
+    };
+    void tick();
+    const id = window.setInterval(() => {
+      void tick();
+    }, 1200);
+    return () => {
+      stopped = true;
+      window.clearInterval(id);
+    };
+  }, []);
 
   // Stop TTS
   const stopSpeaking = useCallback(async () => {
@@ -464,11 +600,70 @@ function SessionPage() {
             />
             {pipelineStats && (
               <div className="text-xs text-text-tertiary flex flex-wrap gap-s">
-                <span className="font-mono">ASR≈{Math.round(pipelineStats.average_latency_ms)}ms</span>
+                <span className="font-mono">平均延时≈{Math.round(pipelineStats.average_latency_ms)}ms</span>
+                {pipelineStats.asr_average_latency_ms !== undefined && (
+                  <span className="font-mono">ASR≈{Math.round(pipelineStats.asr_average_latency_ms)}ms</span>
+                )}
+                {pipelineStats.translation_average_latency_ms !== undefined && pipelineStats.translation_average_latency_ms > 0 && (
+                  <span className="font-mono">翻译≈{Math.round(pipelineStats.translation_average_latency_ms)}ms</span>
+                )}
+                {pipelineStats.tts_average_latency_ms !== undefined && pipelineStats.tts_average_latency_ms > 0 && (
+                  <span className="font-mono">TTS≈{Math.round(pipelineStats.tts_average_latency_ms)}ms</span>
+                )}
                 <span className="font-mono">转写:{pipelineStats.transcription_count}</span>
                 <span className="font-mono">翻译:{pipelineStats.translation_count}</span>
               </div>
             )}
+          </div>
+        </GlassCard>
+
+        <GlassCard className="p-m">
+          <div className="text-xs font-medium text-text-primary mb-s">实时参数</div>
+          <div className="grid grid-cols-1 gap-s text-xs">
+            <label className="flex items-center justify-between gap-s">
+              <span className="text-text-secondary">流式翻译间隔(ms)</span>
+              <input
+                type="number"
+                min={300}
+                max={5000}
+                value={streamTranslationIntervalMs}
+                onChange={(e) => setStreamTranslationIntervalMs(Number(e.target.value || 900))}
+                className="w-24 px-xs py-[4px] rounded border border-bg-tertiary bg-white text-text-primary"
+              />
+            </label>
+            <label className="flex items-center justify-between gap-s">
+              <span className="text-text-secondary">流式翻译最小字数</span>
+              <input
+                type="number"
+                min={2}
+                max={64}
+                value={streamTranslationMinChars}
+                onChange={(e) => setStreamTranslationMinChars(Number(e.target.value || 8))}
+                className="w-24 px-xs py-[4px] rounded border border-bg-tertiary bg-white text-text-primary"
+              />
+            </label>
+            <label className="flex items-center justify-between gap-s">
+              <span className="text-text-secondary">流式播报间隔(ms)</span>
+              <input
+                type="number"
+                min={500}
+                max={10000}
+                value={streamTtsIntervalMs}
+                onChange={(e) => setStreamTtsIntervalMs(Number(e.target.value || 1500))}
+                className="w-24 px-xs py-[4px] rounded border border-bg-tertiary bg-white text-text-primary"
+              />
+            </label>
+            <label className="flex items-center justify-between gap-s">
+              <span className="text-text-secondary">流式播报最小字数</span>
+              <input
+                type="number"
+                min={2}
+                max={128}
+                value={streamTtsMinChars}
+                onChange={(e) => setStreamTtsMinChars(Number(e.target.value || 12))}
+                className="w-24 px-xs py-[4px] rounded border border-bg-tertiary bg-white text-text-primary"
+              />
+            </label>
           </div>
         </GlassCard>
 
@@ -525,6 +720,20 @@ function SessionPage() {
           </div>
         )}
 
+        {runtimeStatus?.lociUnhealthy && (
+          <div className="flex items-start gap-s p-m bg-warning/5 rounded-large border border-warning/20">
+            <AlertCircle size={16} className="text-warning mt-xs flex-shrink-0" />
+            <div className="text-xs text-text-secondary leading-relaxed">
+              Loci 当前处于保护状态，已自动回退 NLLB。
+              {runtimeStatus.lociUnhealthyRemainingSec !== undefined && runtimeStatus.lociUnhealthyRemainingSec > 0 && (
+                <span className="ml-xs font-mono">
+                  预计 {runtimeStatus.lociUnhealthyRemainingSec}s 后可重试。
+                </span>
+              )}
+            </div>
+          </div>
+        )}
+
         {/* Audio Routing */}
         <GlassCard className="p-m">
           <h3 className="text-m font-medium text-text-primary mb-m flex items-center gap-s">
@@ -533,7 +742,7 @@ function SessionPage() {
           </h3>
           <div className="space-y-s">
             <div>
-              <label className="text-xs text-text-secondary block mb-xs">输入设备</label>
+              <label className="text-xs text-text-secondary block mb-xs">本端输入设备</label>
               <select
                 value={selectedInputDevice || ""}
                 onChange={(e) => setInputDevice(e.target.value || null)}
@@ -550,17 +759,51 @@ function SessionPage() {
                   ))}
               </select>
             </div>
+            <div>
+              <label className="text-xs text-text-secondary block mb-xs">对端输入设备（双向）</label>
+              <select
+                value={selectedPeerInputDevice || ""}
+                onChange={(e) => setPeerInputDevice(e.target.value || null)}
+                className="select-field text-s"
+              >
+                <option value="">选择对端输入设备（可留空）</option>
+                {audioDevices
+                  .filter((d) => d.isInput)
+                  .map((device) => (
+                    <option key={device.id} value={device.id}>
+                      {device.name}
+                      {device.isVirtual && " (虚拟)"}
+                    </option>
+                  ))}
+              </select>
+            </div>
             <div className="flex items-center justify-center text-text-tertiary">
               <ArrowRight size={20} />
             </div>
             <div>
-              <label className="text-xs text-text-secondary block mb-xs">输出设备</label>
+              <label className="text-xs text-text-secondary block mb-xs">本端输出设备</label>
               <select
                 className="select-field text-s"
                 value={ttsOutputDevice || ""}
                 onChange={(e) => setTtsOutputDevice(e.target.value || null)}
               >
                 <option value="">系统默认扬声器</option>
+                {ttsOutputDevices.map((device) => (
+                  <option key={device.id} value={device.id}>
+                    {device.name}
+                    {device.is_default && " (默认)"}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="text-xs text-text-secondary block mb-xs">对端输出设备（双向）</label>
+              <select
+                className="select-field text-s"
+                value={peerTtsOutputDevice || ""}
+                onChange={(e) => setPeerTtsOutputDevice(e.target.value || null)}
+              >
+                <option value="">沿用本端输出设备</option>
                 {ttsOutputDevices.map((device) => (
                   <option key={device.id} value={device.id}>
                     {device.name}

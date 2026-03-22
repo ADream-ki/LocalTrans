@@ -39,6 +39,7 @@ export interface SessionState {
   targetLang: string;
   bidirectional: boolean;
   selectedInputDevice: string | null;
+  selectedPeerInputDevice: string | null;
   selectedOutputDevice: string | null;
 
   // Audio devices
@@ -71,6 +72,7 @@ export interface SessionState {
   setTargetLang: (lang: string) => void;
   setBidirectional: (value: boolean) => void;
   setInputDevice: (deviceId: string | null) => void;
+  setPeerInputDevice: (deviceId: string | null) => void;
   setOutputDevice: (deviceId: string | null) => void;
 
   setAsrEngine: (engine: SessionState["asrEngine"]) => void;
@@ -84,10 +86,13 @@ type BackendSessionConfig = {
   sourceLang: string;
   targetLang: string;
   inputDevice: string | null;
+  peerInputDevice: string | null;
   bidirectional: boolean;
   lociEnhanced: boolean;
   vadFrameMs?: number | null;
   vadThreshold?: number | null;
+  streamTranslationIntervalMs?: number | null;
+  streamTranslationMinChars?: number | null;
 };
 
 export const useSessionStore = create<SessionState>((set, get) => ({
@@ -109,6 +114,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   targetLang: "zh",
   bidirectional: false,
   selectedInputDevice: null,
+  selectedPeerInputDevice: null,
   selectedOutputDevice: null,
 
   // Audio devices
@@ -140,9 +146,12 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       sourceLang: state.sourceLang,
       targetLang: state.targetLang,
       inputDevice: state.selectedInputDevice,
+      peerInputDevice: state.selectedPeerInputDevice,
       bidirectional: state.bidirectional,
       lociEnhanced: state.translationEngine === "loci",
       vadFrameMs: settings.chunkSize,
+      streamTranslationIntervalMs: settings.streamTranslationIntervalMs,
+      streamTranslationMinChars: settings.streamTranslationMinChars,
     };
 
     set({ status: "initializing", isRunning: true, lastError: null });
@@ -152,7 +161,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       set({ status: "error", isRunning: false, lastError: msg });
-      throw e;
+      console.error("start_session failed:", e);
     }
   },
 
@@ -177,7 +186,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       set({ status: "error", isRunning: false, lastError: msg });
-      throw e;
+      console.error("pause_session failed:", e);
     }
   },
 
@@ -188,7 +197,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       set({ status: "error", isRunning: false, lastError: msg });
-      throw e;
+      console.error("resume_session failed:", e);
     }
   },
 
@@ -208,6 +217,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   setTargetLang: (lang) => set({ targetLang: lang }),
   setBidirectional: (value) => set({ bidirectional: value }),
   setInputDevice: (deviceId) => set({ selectedInputDevice: deviceId }),
+  setPeerInputDevice: (deviceId) => set({ selectedPeerInputDevice: deviceId }),
   setOutputDevice: (deviceId) => set({ selectedOutputDevice: deviceId }),
 
   setAsrEngine: (engine) => set({ asrEngine: engine }),

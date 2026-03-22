@@ -474,6 +474,7 @@ impl HistoryManager {
     }
     
     /// Import history from JSON string
+    #[allow(clippy::wrong_self_convention)]
     pub fn from_json(&mut self, json: &str) -> Result<(), serde_json::Error> {
         let items: Vec<HistoryItem> = serde_json::from_str(json)?;
         self.items = items;

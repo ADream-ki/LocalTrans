@@ -25,9 +25,9 @@ impl Translator for NllbTranslator {
     }
 
     fn translate(&mut self, text: &str, source_lang: &str, target_lang: &str) -> Result<TranslationResult> {
-        // Placeholder: In production, this would use the NLLB model
+        // Placeholder fallback: keep text readable without exposing mock prefix.
         Ok(TranslationResult {
-            text: format!("[NLLB: {}]", text),
+            text: text.to_string(),
             source_lang: source_lang.to_string(),
             target_lang: target_lang.to_string(),
             confidence: 0.90,

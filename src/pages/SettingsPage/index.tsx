@@ -41,6 +41,11 @@ const ttsVoices = [
   { id: "ko-KR-SunHiNeural", name: "선히 (여성)", lang: "ko-KR" },
 ];
 
+const sherpaVoices = [
+  { id: "sherpa-melo-female", name: "Sherpa 本地女声" },
+  { id: "sherpa-melo-male", name: "Sherpa 本地男声" },
+];
+
 interface AudioDevice {
   id: string;
   name: string;
@@ -360,6 +365,7 @@ function SettingsPage() {
                       onChange={(e) => setTtsEngine(e.target.value as typeof ttsEngine)}
                       className="select-field"
                     >
+                      <option value="sherpa-melo">Sherpa Melo (离线推荐)</option>
                       <option value="edge-tts">Edge TTS (在线)</option>
                       <option value="custom">自定义音色</option>
                       <option value="piper">Piper (离线)</option>
@@ -367,7 +373,7 @@ function SettingsPage() {
                     </select>
                   </div>
                   
-                  {ttsEngine === "edge-tts" && (
+                  {(ttsEngine === "edge-tts" || ttsEngine === "sherpa-melo") && (
                     <div>
                       <label className="text-xs text-text-secondary block mb-xs">语音</label>
                       <select
@@ -375,11 +381,18 @@ function SettingsPage() {
                         onChange={(e) => setTtsVoice(e.target.value)}
                         className="select-field"
                       >
-                        {ttsVoices.map((voice) => (
-                          <option key={voice.id} value={voice.id}>
-                            {voice.name} ({voice.lang})
-                          </option>
-                        ))}
+                        {ttsEngine === "edge-tts" &&
+                          ttsVoices.map((voice) => (
+                            <option key={voice.id} value={voice.id}>
+                              {voice.name} ({voice.lang})
+                            </option>
+                          ))}
+                        {ttsEngine === "sherpa-melo" &&
+                          sherpaVoices.map((voice) => (
+                            <option key={voice.id} value={voice.id}>
+                              {voice.name}
+                            </option>
+                          ))}
                       </select>
                     </div>
                   )}

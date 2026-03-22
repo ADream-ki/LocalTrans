@@ -130,7 +130,9 @@ impl ProcessedAudio {
 pub fn stereo_to_mono(stereo: &[f32]) -> Vec<f32> {
     stereo
         .chunks(2)
-        .map(|chunk| (chunk.get(0).copied().unwrap_or(0.0) + chunk.get(1).copied().unwrap_or(0.0)) * 0.5)
+        .map(|chunk| {
+            (chunk.first().copied().unwrap_or(0.0) + chunk.get(1).copied().unwrap_or(0.0)) * 0.5
+        })
         .collect()
 }
 

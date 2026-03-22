@@ -14,10 +14,11 @@ pub use streaming::{StreamingAsrEngine, StreamingConfig, StreamingResult, Stream
 pub use whisper::{WhisperEngine, WhisperError};
 
 /// Whisper model size variants
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum ModelSize {
     Tiny,
     TinyEn,
+    #[default]
     Base,
     BaseEn,
     Small,
@@ -27,12 +28,6 @@ pub enum ModelSize {
     LargeV1,
     LargeV2,
     LargeV3,
-}
-
-impl Default for ModelSize {
-    fn default() -> Self {
-        Self::Base
-    }
 }
 
 use anyhow::Result;

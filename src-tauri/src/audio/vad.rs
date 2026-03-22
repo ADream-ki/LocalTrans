@@ -51,7 +51,7 @@ impl VadDetector {
         let adaptive_threshold = self.compute_adaptive_threshold();
         let is_speech_frame = energy > adaptive_threshold;
 
-        let result = if self.is_speech {
+        if self.is_speech {
             if is_speech_frame {
                 self.silence_frames = 0;
                 VadResult::Speech
@@ -65,23 +65,19 @@ impl VadDetector {
                     VadResult::Speech
                 }
             }
-        } else {
-            if is_speech_frame {
-                self.speech_frames += 1;
-                if self.speech_frames >= self.min_speech_frames {
-                    self.is_speech = true;
-                    self.silence_frames = 0;
-                    VadResult::SpeechStart
-                } else {
-                    VadResult::Silence
-                }
+        } else if is_speech_frame {
+            self.speech_frames += 1;
+            if self.speech_frames >= self.min_speech_frames {
+                self.is_speech = true;
+                self.silence_frames = 0;
+                VadResult::SpeechStart
             } else {
-                self.speech_frames = 0;
                 VadResult::Silence
             }
-        };
-
-        result
+        } else {
+            self.speech_frames = 0;
+            VadResult::Silence
+        }
     }
 
     fn compute_energy(frame: &[f32]) -> f32 {

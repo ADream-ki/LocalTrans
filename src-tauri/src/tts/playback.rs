@@ -3,6 +3,7 @@
 use anyhow::Result;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{Device, Host};
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
@@ -53,21 +54,31 @@ impl AudioPlayer {
 
     /// List available output devices
     pub fn list_devices() -> Result<Vec<OutputDevice>> {
-        let host = cpal::default_host();
-        let default_output = host.default_output_device()
+        let default_host = cpal::default_host();
+        let default_host_id = default_host.id();
+        let default_output = default_host.default_output_device()
             .and_then(|d| d.name().ok());
+        let mut devices: Vec<OutputDevice> = Vec::new();
+        let mut seen = HashSet::<String>::new();
 
-        let devices: Vec<OutputDevice> = host.output_devices()?
-            .filter_map(|d| {
-                let name = d.name().ok()?;
-                let is_default = default_output.as_ref().map(|n| n == &name).unwrap_or(false);
-                Some(OutputDevice {
-                    id: name.clone(),
-                    name,
-                    is_default,
-                })
-            })
-            .collect();
+        for host_id in cpal::available_hosts() {
+            let Ok(host) = cpal::host_from_id(host_id) else {
+                continue;
+            };
+            for (idx, d) in host.output_devices()?.enumerate() {
+                let Ok(name) = d.name() else { continue };
+                let id = format!("host::{:?}::output::{}::{}", host_id, idx, name);
+                if seen.insert(id.clone()) {
+                    let is_default = host_id == default_host_id
+                        && default_output.as_ref().map(|n| n == &name).unwrap_or(false);
+                    devices.push(OutputDevice {
+                        id,
+                        name,
+                        is_default,
+                    });
+                }
+            }
+        }
 
         Ok(devices)
     }
@@ -169,10 +180,8 @@ impl AudioPlayer {
     }
 
     fn get_device(&self) -> Result<Device> {
-        if let Some(ref name) = self.device_name {
-            self.host.output_devices()?
-                .find(|d| d.name().map(|n| &n == name).unwrap_or(false))
-                .ok_or_else(|| anyhow::anyhow!("Output device not found: {}", name))
+        if let Some(ref wanted) = self.device_name {
+            find_output_device_across_hosts(wanted)
         } else {
             self.host.default_output_device()
                 .ok_or_else(|| anyhow::anyhow!("No default output device"))
@@ -233,9 +242,7 @@ fn play_audio_blocking(
     let host = cpal::default_host();
     
     let device = if let Some(name) = device_name {
-        host.output_devices()?
-            .find(|d| d.name().map(|n| &n == name).unwrap_or(false))
-            .ok_or_else(|| anyhow::anyhow!("Output device not found: {}", name))?
+        find_output_device_across_hosts(name)?
     } else {
         host.default_output_device()
             .ok_or_else(|| anyhow::anyhow!("No default output device"))?
@@ -304,6 +311,52 @@ fn play_audio_blocking(
     }
 
     Ok(())
+}
+
+fn find_output_device_across_hosts(wanted: &str) -> Result<Device> {
+    if let Some(rest) = wanted.strip_prefix("host::") {
+        let mut parts = rest.splitn(4, "::");
+        let host_tag = parts.next();
+        let io_tag = parts.next();
+        let idx_str = parts.next();
+        if host_tag.is_some() && io_tag == Some("output") {
+            if let Some(idx_raw) = idx_str {
+                if let Ok(idx) = idx_raw.parse::<usize>() {
+                    if let Some(hid) = cpal::available_hosts()
+                        .into_iter()
+                        .find(|hid| format!("{:?}", hid) == host_tag.unwrap_or_default())
+                    {
+                        if let Ok(host) = cpal::host_from_id(hid) {
+                            for (i, d) in host.output_devices()?.enumerate() {
+                                if i == idx {
+                                    return Ok(d);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    let mut by_name: Option<Device> = None;
+    for host_id in cpal::available_hosts() {
+        let Ok(host) = cpal::host_from_id(host_id) else {
+            continue;
+        };
+        for (idx, d) in host.output_devices()?.enumerate() {
+            let Ok(name) = d.name() else { continue };
+            let full_id = format!("host::{:?}::output::{}::{}", host_id, idx, name);
+            let legacy_id = name.clone();
+            if wanted == full_id {
+                return Ok(d);
+            }
+            if wanted == legacy_id || wanted == name {
+                by_name = Some(d);
+            }
+        }
+    }
+    by_name.ok_or_else(|| anyhow::anyhow!("Output device not found: {}", wanted))
 }
 
 /// TTS Playback service for real-time translation output

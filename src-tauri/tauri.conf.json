@@ -1,7 +1,7 @@
 {
   "productName": "LocalTrans",
   "version": "0.1.0",
-  "identifier": "com.localtrans.app",
+  "identifier": "com.localtrans.desktop",
   "build": {
     "frontendDist": "../dist",
     "devUrl": "http://localhost:1420",
@@ -18,5 +18,26 @@
         "decorations": false
       }
     ]
+  },
+  "bundle": {
+    "active": true,
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "targets": [
+      "nsis",
+      "msi"
+    ],
+    "windows": {
+      "nsis": {
+        "displayLanguageSelector": true
+      },
+      "wix": {
+        "language": "en-US"
+      }
+    }
   }
 }

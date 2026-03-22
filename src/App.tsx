@@ -1,4 +1,5 @@
 import { useUiStore, type Tab } from "./stores/uiStore";
+import { useEffect } from "react";
 import SessionPage from "./pages/SessionPage";
 import SettingsPage from "./pages/SettingsPage";
 import ModelPage from "./pages/ModelPage";
@@ -14,7 +15,20 @@ const tabs = [
 ];
 
 function App() {
-  const { activeTab, setActiveTab } = useUiStore();
+  const {
+    activeTab,
+    setActiveTab,
+    modelOnboardingSeen,
+    modelOnboardingOpen,
+    openModelOnboarding,
+  } = useUiStore();
+
+  useEffect(() => {
+    if (!modelOnboardingSeen && !modelOnboardingOpen) {
+      setActiveTab("model");
+      openModelOnboarding();
+    }
+  }, [modelOnboardingSeen, modelOnboardingOpen, openModelOnboarding, setActiveTab]);
 
   return (
     <div className="flex flex-col h-full bg-gradient-to-br from-bg-secondary to-bg-tertiary">

@@ -16,12 +16,22 @@ pub fn get_audio_devices() -> Result<Vec<AudioDeviceInfo>, String> {
     let devices = AudioCapture::list_devices()
         .map_err(|e| e.to_string())?;
 
-    Ok(devices.into_iter().map(|d| AudioDeviceInfo {
+    let result: Vec<AudioDeviceInfo> = devices.into_iter().map(|d| AudioDeviceInfo {
         id: d.id,
         name: d.name,
         is_input: d.is_input,
         is_default: d.is_default,
-    }).collect())
+    }).collect();
+
+    let input_count = result.iter().filter(|d| d.is_input).count();
+    let output_count = result.iter().filter(|d| !d.is_input).count();
+    tracing::info!(
+        input_count,
+        output_count,
+        "audio devices enumerated"
+    );
+
+    Ok(result)
 }
 
 #[tauri::command]
@@ -29,6 +39,7 @@ pub async fn start_capture(
     device_id: Option<String>,
     state: State<'_, Mutex<Option<AudioCapture>>>,
 ) -> Result<(), String> {
+    tracing::info!(device_id = ?device_id, "start_capture requested");
     let mut capture = state.lock().map_err(|e| e.to_string())?;
 
     // Stop any existing capture
@@ -42,6 +53,12 @@ pub async fn start_capture(
     audio_capture.start_capture()
         .map_err(|e| e.to_string())?;
 
+    tracing::info!(
+        sample_rate = audio_capture.sample_rate(),
+        channels = audio_capture.channels(),
+        "start_capture successful"
+    );
+
     *capture = Some(audio_capture);
     Ok(())
 }
@@ -50,11 +67,14 @@ pub async fn start_capture(
 pub async fn stop_capture(
     state: State<'_, Mutex<Option<AudioCapture>>>,
 ) -> Result<(), String> {
+    tracing::info!("stop_capture requested");
     let mut capture = state.lock().map_err(|e| e.to_string())?;
 
     if let Some(ref mut audio_capture) = *capture {
         audio_capture.stop_capture();
+        tracing::info!("stop_capture stopped active stream");
     }
     *capture = None;
+    tracing::info!("stop_capture completed");
     Ok(())
 }

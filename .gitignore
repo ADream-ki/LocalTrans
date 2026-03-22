@@ -45,6 +45,11 @@ src-tauri/sherpa-docs/
 *.bak
 *.orig
 src-tauri/Cargo.toml.bak
+tmp_*.wav
+tmp_*.flac
+cli_test_report*.txt
+cli_test_report*.json
+release-assets/
 
 # Model assets (large files, do not commit)
 models/

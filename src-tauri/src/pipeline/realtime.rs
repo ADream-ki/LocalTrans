@@ -12,17 +12,21 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 use std::path::PathBuf;
 use tokio::sync::Mutex as AsyncMutex;
+use tokio::sync::mpsc;
 use parking_lot::Mutex as SyncMutex;
 use tauri::AppHandle;
+use tokio::task::JoinHandle;
+use uuid::Uuid;
 
 use crate::audio::AudioCapture;
 use crate::audio::resample_linear;
 use crate::asr::{AsrConfig, StreamingConfig, StreamingAsrEngine, StreamingResult};
-use crate::translation::{Translator, LociTranslator};
+use crate::translation::{Translator, LociTranslator, NllbTranslator};
 use super::events::{
     EventBroadcaster, HistoryManager, HistoryItem, PipelineEvent, PipelineState,
     ErrorCode, TranscriptionSegment, TranslationInfo,
 };
+use crate::session_bus;
 
 /// Configuration for the realtime pipeline
 #[derive(Debug, Clone)]
@@ -33,6 +37,8 @@ pub struct PipelineConfig {
     pub target_lang: String,
     /// Audio input device ID (None for default)
     pub input_device: Option<String>,
+    /// Peer audio input device ID for dual-route setups (optional, reserved)
+    pub peer_input_device: Option<String>,
     /// Enable bidirectional translation
     pub bidirectional: bool,
     /// VAD frame duration in milliseconds
@@ -49,6 +55,10 @@ pub struct PipelineConfig {
     pub chunk_size: usize,
     /// Maximum history items to keep
     pub max_history: usize,
+    /// Streaming partial translation emit interval
+    pub stream_translation_interval_ms: u64,
+    /// Minimum source text chars to emit a streaming translation
+    pub stream_translation_min_chars: usize,
 }
 
 impl Default for PipelineConfig {
@@ -57,14 +67,17 @@ impl Default for PipelineConfig {
             source_lang: "en".to_string(),
             target_lang: "zh".to_string(),
             input_device: None,
+            peer_input_device: None,
             bidirectional: false,
             vad_frame_ms: 30,
             vad_threshold: 0.01,
-            min_speech_duration_ms: 500,
+            min_speech_duration_ms: 260,
             max_segment_duration_ms: 30000,
-            loci_enhanced: true,
+            loci_enhanced: false,
             chunk_size: 480, // 30ms at 16kHz
             max_history: 500,
+            stream_translation_interval_ms: 900,
+            stream_translation_min_chars: 8,
         }
     }
 }
@@ -131,14 +144,20 @@ impl PipelineStats {
 
 /// The main realtime pipeline structure
 pub struct RealtimePipeline {
+    /// Pipeline instance identifier for diagnostics
+    pipeline_id: String,
     /// Pipeline configuration
     config: PipelineConfig,
     /// Current pipeline state
     state: Arc<tokio::sync::RwLock<PipelineState>>,
     /// Audio capture component
     audio_capture: Arc<AsyncMutex<Option<AudioCapture>>>,
+    /// Peer audio capture component (for dual-route bidirectional mode)
+    peer_audio_capture: Arc<AsyncMutex<Option<AudioCapture>>>,
     /// Streaming ASR engine
     asr_engine: Arc<AsyncMutex<Option<StreamingAsrEngine>>>,
+    /// Peer streaming ASR engine
+    peer_asr_engine: Arc<AsyncMutex<Option<StreamingAsrEngine>>>,
     /// Translator
     translator: Arc<AsyncMutex<Box<dyn Translator>>>,
     /// Event broadcaster
@@ -151,6 +170,8 @@ pub struct RealtimePipeline {
     is_running: Arc<AtomicBool>,
     /// Shutdown signal
     shutdown_tx: Arc<AsyncMutex<Option<mpsc::Sender<()>>>>,
+    /// Processing task handle
+    processing_task: Arc<AsyncMutex<Option<JoinHandle<()>>>>,
     /// Sample rate for audio
     sample_rate: u32,
 }
@@ -162,41 +183,61 @@ impl RealtimePipeline {
         // Create event broadcaster
         let broadcaster = EventBroadcaster::new(app_handle);
         
-        // Initialize translator (prefer Loci GGUF model under app data dir)
-        let translator: Box<dyn Translator> = match find_default_loci_model() {
-            Some(model_path) => match LociTranslator::init(&model_path) {
-                Ok(t) => Box::new(t),
-                Err(e) => {
+        // Initialize translator.
+        // For lower latency, default to lightweight built-in translator unless loci_enhanced=true.
+        let translator: Box<dyn Translator> = if config.loci_enhanced {
+            match find_default_loci_model() {
+                Some(model_path) => match LociTranslator::init(&model_path) {
+                    Ok(t) => Box::new(t),
+                    Err(e) => {
+                        let _ = broadcaster.emit_error(
+                            ErrorCode::TranslationModelNotLoaded,
+                            format!("Failed to load Loci model ({}): {}. Falling back to built-in translator.", model_path.display(), e),
+                        );
+                        Box::new(NllbTranslator::new())
+                    }
+                },
+                None => {
                     let _ = broadcaster.emit_error(
                         ErrorCode::TranslationModelNotLoaded,
-                        format!("Failed to load Loci model ({}): {}", model_path.display(), e),
+                        format!(
+                            "No Loci model found under {}. Falling back to built-in translator.",
+                            default_loci_dir().display()
+                        ),
                     );
-                    Box::new(LociTranslator::new())
+                    Box::new(NllbTranslator::new())
                 }
-            },
-            None => {
-                let _ = broadcaster.emit_error(
-                    ErrorCode::TranslationModelNotLoaded,
-                    format!(
-                        "No Loci model found. Put a .gguf file under: {}",
-                        default_loci_dir().display()
-                    ),
-                );
-                Box::new(LociTranslator::new())
             }
+        } else {
+            Box::new(NllbTranslator::new())
         };
         
+        let pipeline_id = Uuid::new_v4().to_string();
+        tracing::info!(
+            pipeline_id = %pipeline_id,
+            source_lang = %config.source_lang,
+            target_lang = %config.target_lang,
+            input_device = ?config.input_device,
+            peer_input_device = ?config.peer_input_device,
+            bidirectional = config.bidirectional,
+            "creating realtime pipeline"
+        );
+
         Ok(Self {
+            pipeline_id,
             config,
             state: Arc::new(tokio::sync::RwLock::new(PipelineState::Idle)),
             audio_capture: Arc::new(AsyncMutex::new(None)),
+            peer_audio_capture: Arc::new(AsyncMutex::new(None)),
             asr_engine: Arc::new(AsyncMutex::new(None)),
+            peer_asr_engine: Arc::new(AsyncMutex::new(None)),
             translator: Arc::new(AsyncMutex::new(translator)),
             broadcaster: Arc::new(broadcaster),
             history: Arc::new(AsyncMutex::new(HistoryManager::new(max_history))),
             stats: Arc::new(SyncMutex::new(PipelineStats::default())),
             is_running: Arc::new(AtomicBool::new(false)),
             shutdown_tx: Arc::new(AsyncMutex::new(None)),
+            processing_task: Arc::new(AsyncMutex::new(None)),
             sample_rate: 16000,
         })
     }
@@ -207,6 +248,15 @@ impl RealtimePipeline {
         if current_state == PipelineState::Running {
             return Err(anyhow!("Pipeline is already running"));
         }
+
+        tracing::info!(
+            pipeline_id = %self.pipeline_id,
+            current_state = %current_state,
+            source_lang = %self.config.source_lang,
+            target_lang = %self.config.target_lang,
+            input_device = ?self.config.input_device,
+            "pipeline start requested"
+        );
         
         // Update state
         self.set_state(PipelineState::Initializing).await;
@@ -225,11 +275,21 @@ impl RealtimePipeline {
         
         audio_capture.start_capture()
             .context("Failed to start audio capture")?;
+
+        tracing::info!(
+            pipeline_id = %self.pipeline_id,
+            input_sample_rate = audio_capture.sample_rate(),
+            input_channels = audio_capture.channels(),
+            "audio capture initialized for pipeline"
+        );
         
         *self.audio_capture.lock().await = Some(audio_capture);
         
         // Initialize streaming ASR engine
-        let asr_config = AsrConfig::default();
+        let asr_config = AsrConfig {
+            language: Some(self.config.source_lang.clone()),
+            ..Default::default()
+        };
         let mut streaming_config = StreamingConfig::new(self.sample_rate);
         streaming_config.vad_energy_threshold = self.config.vad_threshold;
         streaming_config.min_speech_duration_ms =
@@ -251,8 +311,59 @@ impl RealtimePipeline {
         
         let asr_engine = StreamingAsrEngine::new(asr_config, streaming_config)
             .map_err(|e| anyhow!("Failed to initialize ASR engine: {}", e))?;
+
+        tracing::info!(
+            pipeline_id = %self.pipeline_id,
+            asr_chunk_size,
+            sample_rate = self.sample_rate,
+            "asr engine initialized for pipeline"
+        );
         
         *self.asr_engine.lock().await = Some(asr_engine);
+
+        // Initialize peer route when bidirectional mode explicitly provides a second input device.
+        if self.config.bidirectional {
+            if let Some(peer_input_device) = self.config.peer_input_device.as_deref() {
+                let mut peer_capture = AudioCapture::new(Some(peer_input_device))
+                    .context("Failed to initialize peer audio capture")?;
+                peer_capture
+                    .start_capture()
+                    .context("Failed to start peer audio capture")?;
+                tracing::info!(
+                    pipeline_id = %self.pipeline_id,
+                    peer_input_device = %peer_input_device,
+                    peer_input_sample_rate = peer_capture.sample_rate(),
+                    peer_input_channels = peer_capture.channels(),
+                    "peer audio capture initialized for pipeline"
+                );
+                *self.peer_audio_capture.lock().await = Some(peer_capture);
+
+                let peer_asr_config = AsrConfig {
+                    language: Some(self.config.target_lang.clone()),
+                    ..Default::default()
+                };
+                let mut peer_streaming_config = StreamingConfig::new(self.sample_rate);
+                peer_streaming_config.vad_energy_threshold = self.config.vad_threshold;
+                peer_streaming_config.min_speech_duration_ms =
+                    (self.config.min_speech_duration_ms.min(u32::MAX as u64)) as u32;
+                peer_streaming_config.max_speech_duration_ms =
+                    (self.config.max_segment_duration_ms.min(u32::MAX as u64)) as u32;
+                peer_streaming_config.chunk_size = asr_chunk_size;
+                let peer_asr_engine = StreamingAsrEngine::new(peer_asr_config, peer_streaming_config)
+                    .map_err(|e| anyhow!("Failed to initialize peer ASR engine: {}", e))?;
+                *self.peer_asr_engine.lock().await = Some(peer_asr_engine);
+                tracing::info!(
+                    pipeline_id = %self.pipeline_id,
+                    peer_input_device = %peer_input_device,
+                    "peer asr engine initialized for pipeline"
+                );
+            } else {
+                tracing::info!(
+                    pipeline_id = %self.pipeline_id,
+                    "bidirectional enabled without peer_input_device; peer capture route disabled"
+                );
+            }
+        }
         
         // Create shutdown channel
         let (shutdown_tx, mut shutdown_rx) = mpsc::channel::<()>(1);
@@ -270,7 +381,9 @@ impl RealtimePipeline {
         
         // Clone references for the async task
         let audio_capture = self.audio_capture.clone();
+        let peer_audio_capture = self.peer_audio_capture.clone();
         let asr_engine = self.asr_engine.clone();
+        let peer_asr_engine = self.peer_asr_engine.clone();
         let translator = self.translator.clone();
         let broadcaster = self.broadcaster.clone();
         let history = self.history.clone();
@@ -279,18 +392,25 @@ impl RealtimePipeline {
         let state = self.state.clone();
         let config = self.config.clone();
         let sample_rate = self.sample_rate;
-        let asr_chunk_size = asr_chunk_size;
-        
         // Spawn the main processing loop
-        tokio::spawn(async move {
+        let pipeline_id = self.pipeline_id.clone();
+        let handle = tokio::spawn(async move {
             let mut last_stats_emit = Instant::now();
             let mut last_translation_error_emit = Instant::now() - Duration::from_secs(60);
+            let mut last_stream_translation_emit = Instant::now() - Duration::from_secs(60);
+            let mut last_stream_source_text = String::new();
+            let mut stream_seq: u64 = 0;
             let mut chunk_buffer: std::collections::VecDeque<f32> =
                 std::collections::VecDeque::with_capacity(asr_chunk_size * 8);
+            let mut peer_chunk_buffer: std::collections::VecDeque<f32> =
+                std::collections::VecDeque::with_capacity(asr_chunk_size * 8);
+
+            tracing::info!(pipeline_id = %pipeline_id, "pipeline processing loop started");
             
             loop {
                 // Check for shutdown
                 if shutdown_rx.try_recv().is_ok() || !is_running.load(Ordering::SeqCst) {
+                    tracing::info!(pipeline_id = %pipeline_id, "pipeline loop shutdown signal received");
                     break;
                 }
                 
@@ -346,6 +466,7 @@ impl RealtimePipeline {
                                 Ok(r) => r,
                                 Err(e) => {
                                     stats.lock().error_count += 1;
+                                    tracing::error!(pipeline_id = %pipeline_id, error = %e, "asr process error");
                                     let _ = broadcaster.emit_error(
                                         ErrorCode::AsrTranscriptionFailed,
                                         e.to_string(),
@@ -367,6 +488,48 @@ impl RealtimePipeline {
                                 partial.detected_language.as_deref().unwrap_or("auto"),
                                 partial.confidence,
                             );
+
+                            let ptxt = partial.text.trim();
+                            let should_stream_translate = ptxt.len() >= config.stream_translation_min_chars
+                                && last_stream_translation_emit.elapsed()
+                                    >= Duration::from_millis(config.stream_translation_interval_ms)
+                                && ptxt != last_stream_source_text;
+                            if should_stream_translate {
+                                let translation_result: Result<_, String> = {
+                                    let mut trans = translator.lock().await;
+                                    trans.translate(
+                                        ptxt,
+                                        &config.source_lang,
+                                        &config.target_lang,
+                                    )
+                                    .map_err(|e| e.to_string())
+                                };
+                                match translation_result {
+                                    Ok(translation) => {
+                                        stream_seq += 1;
+                                        let sid = format!("stream-{}", stream_seq);
+                                        let _ = broadcaster.emit_translation(
+                                            &sid,
+                                            ptxt,
+                                            &translation.text,
+                                            &translation.source_lang,
+                                            &translation.target_lang,
+                                            translation.confidence,
+                                        );
+                                        last_stream_source_text = ptxt.to_string();
+                                        last_stream_translation_emit = Instant::now();
+                                    }
+                                    Err(err) => {
+                                        if last_translation_error_emit.elapsed() >= Duration::from_secs(5) {
+                                            let _ = broadcaster.emit_error(
+                                                ErrorCode::TranslationFailed,
+                                                err,
+                                            );
+                                            last_translation_error_emit = Instant::now();
+                                        }
+                                    }
+                                }
+                            }
                         }
                         StreamingResult::Final(transcription) => {
                             // Emit final transcription
@@ -411,6 +574,12 @@ impl RealtimePipeline {
                                     Ok(translation) => {
                                     // Update stats
                                     stats.lock().translation_count += 1;
+                                    tracing::debug!(
+                                        pipeline_id = %pipeline_id,
+                                        source_len = transcription.text.len(),
+                                        target_len = translation.text.len(),
+                                        "translation completed"
+                                    );
                                     
                                     // Emit translation
                                     let id = uuid::Uuid::new_v4().to_string();
@@ -435,6 +604,15 @@ impl RealtimePipeline {
                                     .with_loci_enhanced(config.loci_enhanced);
                                     
                                     history.lock().await.add(history_item);
+                                    let _ = session_bus::append_history(&session_bus::SessionHistoryItem {
+                                        id,
+                                        source_text: transcription.text.clone(),
+                                        translated_text: translation.text.clone(),
+                                        source_lang: config.source_lang.clone(),
+                                        target_lang: config.target_lang.clone(),
+                                        timestamp: chrono::Utc::now().to_rfc3339(),
+                                        confidence: transcription.confidence.min(translation.confidence),
+                                    });
                                     
                                     // Bidirectional translation
                                     if config.bidirectional {
@@ -471,6 +649,7 @@ impl RealtimePipeline {
                                     }
                                     Err(err) => {
                                         stats.lock().error_count += 1;
+                                        tracing::error!(pipeline_id = %pipeline_id, error = %err, "translation failed");
                                         if last_translation_error_emit.elapsed() >= Duration::from_secs(5) {
                                             let _ = broadcaster.emit_error(
                                                 ErrorCode::TranslationFailed,
@@ -483,6 +662,7 @@ impl RealtimePipeline {
                             }
                         }
                         StreamingResult::Error(msg) => {
+                            tracing::error!(pipeline_id = %pipeline_id, error = %msg, "asr returned error result");
                             let _ = broadcaster.emit_error(
                                 ErrorCode::AsrTranscriptionFailed,
                                 msg,
@@ -492,10 +672,95 @@ impl RealtimePipeline {
                         }
                     }
                 }
+
+                // Peer route: independent capture + ASR in bidirectional mode.
+                if config.bidirectional {
+                    let (peer_samples, peer_input_sample_rate) = {
+                        let mut capture_guard = peer_audio_capture.lock().await;
+                        if let Some(ref mut capture) = *capture_guard {
+                            (capture.get_samples(), capture.sample_rate())
+                        } else {
+                            (Vec::new(), sample_rate)
+                        }
+                    };
+
+                    if !peer_samples.is_empty() {
+                        let peer_resampled =
+                            if peer_input_sample_rate > 0 && peer_input_sample_rate != sample_rate {
+                                resample_linear(&peer_samples, peer_input_sample_rate, sample_rate)
+                            } else {
+                                peer_samples
+                            };
+                        peer_chunk_buffer.extend(peer_resampled);
+
+                        while peer_chunk_buffer.len() >= asr_chunk_size {
+                            let peer_chunk: Vec<f32> =
+                                peer_chunk_buffer.drain(..asr_chunk_size).collect();
+                            let peer_asr_result = {
+                                let mut asr_guard = peer_asr_engine.lock().await;
+                                if let Some(ref mut engine) = *asr_guard {
+                                    match engine.process(&peer_chunk) {
+                                        Ok(r) => r,
+                                        Err(e) => {
+                                            stats.lock().error_count += 1;
+                                            tracing::error!(
+                                                pipeline_id = %pipeline_id,
+                                                error = %e,
+                                                "peer asr process error"
+                                            );
+                                            None
+                                        }
+                                    }
+                                } else {
+                                    None
+                                }
+                            };
+
+                            if let Some(StreamingResult::Final(peer_transcription)) = peer_asr_result
+                            {
+                                if !peer_transcription.text.trim().is_empty() {
+                                    let reverse_result: Result<_, String> = {
+                                        let mut trans = translator.lock().await;
+                                        trans.translate(
+                                            &peer_transcription.text,
+                                            &config.target_lang,
+                                            &config.source_lang,
+                                        )
+                                        .map_err(|e| e.to_string())
+                                    };
+                                    if let Ok(reverse) = reverse_result {
+                                        let _ = broadcaster.emit(&PipelineEvent::BidirectionalTranslation {
+                                            forward: None,
+                                            backward: Some(TranslationInfo {
+                                                source_text: peer_transcription.text.clone(),
+                                                target_text: reverse.text,
+                                                source_lang: config.target_lang.clone(),
+                                                target_lang: config.source_lang.clone(),
+                                                confidence: reverse.confidence,
+                                            }),
+                                            timestamp: chrono::Utc::now(),
+                                        });
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
                 
                 // Emit stats periodically
                 if last_stats_emit.elapsed().as_secs() >= 5 {
                     let stats_guard = stats.lock();
+                    let _ = session_bus::write_metrics(&session_bus::SessionMetrics {
+                        total_audio_duration_ms: stats_guard.total_audio_duration_ms,
+                        speech_duration_ms: stats_guard.speech_duration_ms,
+                        transcription_count: stats_guard.transcription_count,
+                        translation_count: stats_guard.translation_count,
+                        average_latency_ms: stats_guard.average_latency_ms(),
+                        asr_average_latency_ms: stats_guard.average_latency_ms(),
+                        translation_average_latency_ms: 0.0,
+                        tts_average_latency_ms: 0.0,
+                        last_updated_unix_ms: session_bus::now_unix_ms(),
+                    });
                     let _ = broadcaster.emit_stats(
                         stats_guard.total_audio_duration_ms,
                         stats_guard.speech_duration_ms,
@@ -516,7 +781,10 @@ impl RealtimePipeline {
                 PipelineState::Idle,
                 Some("Pipeline stopped"),
             );
+            tracing::info!(pipeline_id = %pipeline_id, "pipeline processing loop ended");
         });
+
+        *self.processing_task.lock().await = Some(handle);
         
         Ok(())
     }
@@ -525,8 +793,19 @@ impl RealtimePipeline {
     pub async fn stop(&self) -> Result<()> {
         let current_state = *self.state.read().await;
         if current_state != PipelineState::Running && current_state != PipelineState::Paused {
+            tracing::info!(
+                pipeline_id = %self.pipeline_id,
+                current_state = %current_state,
+                "pipeline stop requested but already idle"
+            );
             return Ok(());
         }
+
+        tracing::info!(
+            pipeline_id = %self.pipeline_id,
+            current_state = %current_state,
+            "pipeline stop requested"
+        );
         
         // Signal shutdown
         self.is_running.store(false, Ordering::SeqCst);
@@ -542,12 +821,42 @@ impl RealtimePipeline {
             capture.stop_capture();
         }
         *capture_guard = None;
+        let mut peer_capture_guard = self.peer_audio_capture.lock().await;
+        if let Some(ref mut capture) = *peer_capture_guard {
+            capture.stop_capture();
+        }
+        *peer_capture_guard = None;
+        tracing::info!(pipeline_id = %self.pipeline_id, "pipeline audio capture released");
         
         // Clear ASR engine
         *self.asr_engine.lock().await = None;
+        *self.peer_asr_engine.lock().await = None;
+        tracing::info!(pipeline_id = %self.pipeline_id, "pipeline asr engine released");
+
+        if let Some(mut handle) = self.processing_task.lock().await.take() {
+            match tokio::time::timeout(Duration::from_secs(2), &mut handle).await {
+                Ok(joined) => {
+                    if let Err(join_err) = joined {
+                        tracing::error!(
+                            pipeline_id = %self.pipeline_id,
+                            error = %join_err,
+                            "pipeline task join failed"
+                        );
+                    }
+                }
+                Err(_) => {
+                    handle.abort();
+                    tracing::warn!(
+                        pipeline_id = %self.pipeline_id,
+                        "pipeline task did not finish in time; aborted"
+                    );
+                }
+            }
+        }
         
         // Update state
         self.set_state(PipelineState::Idle).await;
+        tracing::info!(pipeline_id = %self.pipeline_id, "pipeline stopped");
         
         Ok(())
     }
@@ -734,14 +1043,13 @@ mod tests {
     
     #[test]
     fn test_pipeline_stats() {
-        let mut stats = PipelineStats::default();
-        stats.transcription_count = 10;
-        stats.total_latency_ms = 500;
+        let stats = PipelineStats {
+            transcription_count: 10,
+            total_latency_ms: 500,
+            ..Default::default()
+        };
         
         assert!((stats.average_latency_ms() - 50.0).abs() < 0.01);
     }
 }
-
-// Import mpsc for shutdown channel
-use tokio::sync::mpsc;
 

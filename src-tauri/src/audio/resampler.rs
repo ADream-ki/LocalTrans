@@ -48,7 +48,7 @@ impl AudioResampler {
         let output = self.resampler.process(&input_vecs, None)?;
 
         // Interleave output channels
-        let output_len = output.get(0).map(|v| v.len()).unwrap_or(0);
+        let output_len = output.first().map(|v| v.len()).unwrap_or(0);
         let mut result = vec![0.0f32; output_len * self.channels];
         
         for (ch, channel_data) in output.iter().enumerate() {

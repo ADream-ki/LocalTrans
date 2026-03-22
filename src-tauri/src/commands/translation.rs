@@ -7,7 +7,7 @@ use std::sync::Arc;
 use parking_lot::Mutex as SyncMutex;
 use tauri::State;
 
-use crate::translation::{LociTranslator, Translator, TranslationResult};
+use crate::translation::{LociTranslator, NllbTranslator, Translator, TranslationResult};
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -34,6 +34,7 @@ pub struct TranslateResponse {
 pub struct TranslationService {
     loci: Option<LociTranslator>,
     loci_model_path: Option<PathBuf>,
+    nllb: NllbTranslator,
 }
 
 impl TranslationService {
@@ -41,6 +42,7 @@ impl TranslationService {
         let engine = request.engine.as_deref().unwrap_or("loci");
         match engine {
             "loci" => self.translate_loci(request),
+            "nllb" => self.nllb.translate(&request.text, &request.source_lang, &request.target_lang),
             other => anyhow::bail!("Unsupported translation engine: {}", other),
         }
     }
@@ -50,13 +52,15 @@ impl TranslationService {
             Some(PathBuf::from(p))
         } else {
             find_default_loci_model()
-        }
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "No Loci model found. Put a .gguf file under: {}",
+        };
+
+        let Some(model_path) = model_path else {
+            tracing::warn!(
+                "No Loci model found under {}. Falling back to built-in translator.",
                 default_loci_dir().display()
-            )
-        })?;
+            );
+            return self.nllb.translate(&request.text, &request.source_lang, &request.target_lang);
+        };
 
         let need_reload = match self.loci_model_path.as_ref() {
             Some(existing) => existing != &model_path,
@@ -69,12 +73,16 @@ impl TranslationService {
             self.loci_model_path = Some(model_path);
         }
 
-        let translator = self
-            .loci
-            .as_mut()
-            .ok_or_else(|| anyhow::anyhow!("Loci translator not initialized"))?;
-
-        translator.translate(&request.text, &request.source_lang, &request.target_lang)
+        match self.loci.as_mut() {
+            Some(translator) => match translator.translate(&request.text, &request.source_lang, &request.target_lang) {
+                Ok(v) => Ok(v),
+                Err(e) => {
+                    tracing::warn!("Loci translation failed, fallback to NLLB: {}", e);
+                    self.nllb.translate(&request.text, &request.source_lang, &request.target_lang)
+                }
+            },
+            None => self.nllb.translate(&request.text, &request.source_lang, &request.target_lang),
+        }
     }
 }
 

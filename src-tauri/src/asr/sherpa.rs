@@ -8,21 +8,27 @@ use super::{
 };
 use anyhow::Result;
 #[cfg(feature = "sherpa-backend")]
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 #[cfg(feature = "sherpa-backend")]
 mod sherpa_impl {
     use super::*;
     use dirs;
     use parking_lot::Mutex;
+    use sherpa_rs::paraformer::{ParaformerConfig, ParaformerRecognizer};
     use sherpa_rs::silero_vad::{SileroVad, SileroVadConfig};
     use sherpa_rs::zipformer::{ZipFormer, ZipFormerConfig};
     use std::sync::Arc;
     use std::time::Instant;
 
+    enum OfflineRecognizer {
+        ZipFormer(ZipFormer),
+        Paraformer(ParaformerRecognizer),
+    }
+
     /// Sherpa-rs based ASR engine using VAD + offline recognition
     pub struct SherpaAsrEngine {
-        recognizer: Option<Arc<Mutex<ZipFormer>>>,
+        recognizer: Option<Arc<Mutex<OfflineRecognizer>>>,
         vad: Option<Arc<Mutex<SileroVad>>>,
         config: AsrConfig,
         language: Option<String>,
@@ -75,6 +81,33 @@ mod sherpa_impl {
             Ok(vad_model)
         }
 
+        fn should_enable_vad(vad_model_path: &PathBuf) -> bool {
+            let enabled_by_env = std::env::var("LOCALTRANS_ENABLE_SILERO_VAD")
+                .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+                .unwrap_or(false);
+
+            if !enabled_by_env {
+                tracing::warn!("Silero VAD is disabled by default; set LOCALTRANS_ENABLE_SILERO_VAD=1 to enable");
+                return false;
+            }
+
+            let Ok(meta) = std::fs::metadata(vad_model_path) else {
+                tracing::warn!("Silero VAD model not found: {:?}", vad_model_path);
+                return false;
+            };
+
+            // Avoid feeding obviously broken files into native runtime.
+            if meta.len() < 1024 * 1024 {
+                tracing::warn!(
+                    size = meta.len(),
+                    "Silero VAD model file looks invalid (too small); disabling VAD"
+                );
+                return false;
+            }
+
+            true
+        }
+
         /// Initialize the recognizer and VAD
         fn init_components(&mut self) -> Result<(), AsrError> {
             if self.initialized {
@@ -84,7 +117,10 @@ mod sherpa_impl {
             // Accept both layouts:
             // - models/asr/{tokens.txt, encoder*.onnx, decoder*.onnx, joiner*.onnx}
             // - models/asr/<model-name>/{...}
-            let resolved_dir = Self::resolve_asr_model_dir(&self.config.model_path);
+            let resolved_dir = Self::resolve_asr_model_dir(
+                &self.config.model_path,
+                self.config.language.as_deref(),
+            );
             if resolved_dir != self.config.model_path {
                 tracing::info!(
                     "ASR model files not found in {:?}; using {:?}",
@@ -106,42 +142,59 @@ mod sherpa_impl {
             let joiner_path = Self::find_model_file(model_dir, "joiner");
             let tokens_path = model_dir.join("tokens.txt");
 
-            // Verify required files exist
-            if !encoder_path.exists() || !decoder_path.exists() || !joiner_path.exists() {
-                return Err(AsrError::InitializationFailed(format!(
-                    "Missing model files. Required: encoder, decoder, joiner in {:?}",
-                    model_dir
-                )));
-            }
-
             if !tokens_path.exists() {
                 return Err(AsrError::ModelNotFound(tokens_path));
             }
 
-            // Create ZipFormer recognizer
-            tracing::info!("Creating ZipFormer with config:");
-            tracing::info!("  encoder: {:?}", encoder_path);
-            tracing::info!("  decoder: {:?}", decoder_path);
-            tracing::info!("  joiner: {:?}", joiner_path);
-            tracing::info!("  tokens: {:?}", tokens_path);
-            tracing::info!("  threads: {}", self.config.threads);
+            let recognizer = if encoder_path.exists() && decoder_path.exists() && joiner_path.exists() {
+                tracing::info!("Creating ZipFormer with config:");
+                tracing::info!("  encoder: {:?}", encoder_path);
+                tracing::info!("  decoder: {:?}", decoder_path);
+                tracing::info!("  joiner: {:?}", joiner_path);
+                tracing::info!("  tokens: {:?}", tokens_path);
+                tracing::info!("  threads: {}", self.config.threads);
 
-            let zipformer_config = ZipFormerConfig {
-                encoder: encoder_path.to_string_lossy().to_string(),
-                decoder: decoder_path.to_string_lossy().to_string(),
-                joiner: joiner_path.to_string_lossy().to_string(),
-                tokens: tokens_path.to_string_lossy().to_string(),
-                num_threads: Some(self.config.threads as i32),
-                debug: false,
-                ..Default::default()
+                let zipformer_config = ZipFormerConfig {
+                    encoder: encoder_path.to_string_lossy().to_string(),
+                    decoder: decoder_path.to_string_lossy().to_string(),
+                    joiner: joiner_path.to_string_lossy().to_string(),
+                    tokens: tokens_path.to_string_lossy().to_string(),
+                    num_threads: Some(self.config.threads as i32),
+                    debug: false,
+                    ..Default::default()
+                };
+
+                tracing::info!("Calling ZipFormer::new()...");
+                let z = ZipFormer::new(zipformer_config).map_err(|e| {
+                    tracing::error!("ZipFormer::new() failed: {}", e);
+                    AsrError::InitializationFailed(format!("Failed to create ZipFormer: {}", e))
+                })?;
+                tracing::info!("ZipFormer created successfully");
+                OfflineRecognizer::ZipFormer(z)
+            } else if let Some(model_path) = Self::find_paraformer_model_file(model_dir) {
+                tracing::info!("Creating Paraformer with config:");
+                tracing::info!("  model: {:?}", model_path);
+                tracing::info!("  tokens: {:?}", tokens_path);
+                tracing::info!("  threads: {}", self.config.threads);
+
+                let p = ParaformerRecognizer::new(ParaformerConfig {
+                    model: model_path.to_string_lossy().to_string(),
+                    tokens: tokens_path.to_string_lossy().to_string(),
+                    provider: None,
+                    num_threads: Some(self.config.threads as i32),
+                    debug: false,
+                })
+                .map_err(|e| {
+                    AsrError::InitializationFailed(format!("Failed to create Paraformer: {}", e))
+                })?;
+                tracing::info!("Paraformer created successfully");
+                OfflineRecognizer::Paraformer(p)
+            } else {
+                return Err(AsrError::InitializationFailed(format!(
+                    "Missing model files in {:?}. Need zipformer (encoder/decoder/joiner + tokens) or paraformer (model*.onnx + tokens).",
+                    model_dir
+                )));
             };
-
-            tracing::info!("Calling ZipFormer::new()...");
-            let recognizer = ZipFormer::new(zipformer_config).map_err(|e| {
-                tracing::error!("ZipFormer::new() failed: {}", e);
-                AsrError::InitializationFailed(format!("Failed to create ZipFormer: {}", e))
-            })?;
-            tracing::info!("ZipFormer created successfully");
 
             // Create VAD with silero model
             let vad_model_path = Self::get_vad_model_path()?;
@@ -152,7 +205,7 @@ mod sherpa_impl {
             };
 
             // Buffer size of 30 seconds for VAD
-            if vad_model_path.exists() {
+            if Self::should_enable_vad(&vad_model_path) {
                 match SileroVad::new(vad_config, 30.0) {
                     Ok(vad) => {
                         self.vad = Some(Arc::new(Mutex::new(vad)));
@@ -165,7 +218,7 @@ mod sherpa_impl {
                 }
             } else {
                 tracing::warn!(
-                    "VAD model not found at {:?}, using simple audio buffering",
+                    "VAD disabled, using simple audio buffering: {:?}",
                     vad_model_path
                 );
                 self.vad = None;
@@ -178,7 +231,7 @@ mod sherpa_impl {
             Ok(())
         }
 
-        fn is_valid_asr_model_dir(model_dir: &PathBuf) -> bool {
+        fn is_valid_asr_model_dir(model_dir: &Path) -> bool {
             if !model_dir.exists() || !model_dir.is_dir() {
                 return false;
             }
@@ -188,40 +241,77 @@ mod sherpa_impl {
             let encoder_path = Self::find_model_file(model_dir, "encoder");
             let decoder_path = Self::find_model_file(model_dir, "decoder");
             let joiner_path = Self::find_model_file(model_dir, "joiner");
-            encoder_path.exists() && decoder_path.exists() && joiner_path.exists()
+            let paraformer_path = Self::find_paraformer_model_file(model_dir);
+            (encoder_path.exists() && decoder_path.exists() && joiner_path.exists())
+                || paraformer_path.is_some()
         }
 
-        fn resolve_asr_model_dir(base_dir: &PathBuf) -> PathBuf {
+        fn resolve_asr_model_dir(base_dir: &PathBuf, preferred_lang: Option<&str>) -> PathBuf {
+            let mut candidates: Vec<PathBuf> = Vec::new();
             if Self::is_valid_asr_model_dir(base_dir) {
+                candidates.push(base_dir.clone());
+            }
+
+            if let Ok(entries) = std::fs::read_dir(base_dir) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if !path.is_dir() {
+                        continue;
+                    }
+                    if Self::is_valid_asr_model_dir(&path) {
+                        candidates.push(path);
+                    }
+                }
+            }
+
+            if candidates.is_empty() {
                 return base_dir.clone();
             }
 
-            let entries = match std::fs::read_dir(base_dir) {
-                Ok(e) => e,
-                Err(_) => return base_dir.clone(),
-            };
+            let lang = preferred_lang.unwrap_or("auto").to_ascii_lowercase();
+            let prefer_non_en = lang != "en" && lang != "auto";
 
-            let mut best: Option<(u64, PathBuf)> = None;
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if !path.is_dir() {
-                    continue;
+            let mut best: Option<(i32, u64, PathBuf)> = None;
+            for candidate in candidates {
+                let has_zipformer = Self::find_model_file(&candidate, "encoder").exists()
+                    && Self::find_model_file(&candidate, "decoder").exists()
+                    && Self::find_model_file(&candidate, "joiner").exists();
+                let has_paraformer = Self::find_paraformer_model_file(&candidate).is_some();
+                let name = candidate.to_string_lossy().to_ascii_lowercase();
+
+                let mut score = 0i32;
+                if prefer_non_en {
+                    if has_paraformer {
+                        score += 4;
+                    }
+                    if name.contains("zh") || name.contains("multi") || name.contains("trilingual")
+                    {
+                        score += 2;
+                    }
+                    if name.contains("-en") || name.contains("_en") {
+                        score -= 2;
+                    }
+                } else {
+                    if has_zipformer {
+                        score += 3;
+                    }
+                    if name.contains("-en") || name.contains("_en") {
+                        score += 2;
+                    }
                 }
-                let pb = path;
-                if !Self::is_valid_asr_model_dir(&pb) {
-                    continue;
-                }
-                let size = Self::dir_size(&pb);
+
+                let size = Self::dir_size(&candidate);
                 match &best {
-                    Some((best_size, _)) if *best_size >= size => {}
-                    _ => best = Some((size, pb)),
+                    Some((best_score, best_size, _))
+                        if *best_score > score || (*best_score == score && *best_size >= size) => {}
+                    _ => best = Some((score, size, candidate)),
                 }
             }
 
-            best.map(|(_, p)| p).unwrap_or_else(|| base_dir.clone())
+            best.map(|(_, _, p)| p).unwrap_or_else(|| base_dir.clone())
         }
 
-        fn dir_size(path: &PathBuf) -> u64 {
+        fn dir_size(path: &Path) -> u64 {
             fn inner(p: &std::path::Path) -> u64 {
                 let mut total = 0u64;
                 let Ok(entries) = std::fs::read_dir(p) else {
@@ -239,11 +329,11 @@ mod sherpa_impl {
                 }
                 total
             }
-            inner(path.as_path())
+            inner(path)
         }
 
         /// Find model file with various naming conventions
-        fn find_model_file(model_dir: &PathBuf, prefix: &str) -> PathBuf {
+        fn find_model_file(model_dir: &Path, prefix: &str) -> PathBuf {
             let candidates = vec![
                 model_dir.join(format!("{}-epoch-99-avg-1.int8.onnx", prefix)),
                 model_dir.join(format!("{}-epoch-99-avg-1.onnx", prefix)),
@@ -258,6 +348,17 @@ mod sherpa_impl {
             }
 
             model_dir.join(format!("{}.onnx", prefix))
+        }
+
+        fn find_paraformer_model_file(model_dir: &Path) -> Option<PathBuf> {
+            let candidates = vec![
+                model_dir.join("model.int8.onnx"),
+                model_dir.join("model.onnx"),
+                model_dir.join("paraformer.int8.onnx"),
+                model_dir.join("paraformer.onnx"),
+            ];
+
+            candidates.into_iter().find(|p| p.exists())
         }
     }
 
@@ -289,10 +390,13 @@ mod sherpa_impl {
                 audio.to_vec()
             };
 
-            // Decode using ZipFormer
+            // Decode using selected offline recognizer
             let start = Instant::now();
             let mut recognizer = recognizer.lock();
-            let text = recognizer.decode(self.sample_rate, samples.clone());
+            let text = match &mut *recognizer {
+                OfflineRecognizer::ZipFormer(z) => z.decode(self.sample_rate, samples.clone()),
+                OfflineRecognizer::Paraformer(p) => p.transcribe(self.sample_rate, &samples).text,
+            };
             let processing_time_ms = start.elapsed().as_millis() as u64;
 
             let duration = audio.len() as f64 / sample_rate as f64;

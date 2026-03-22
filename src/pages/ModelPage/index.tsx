@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import GlassCard from "../../components/GlassCard";
+import { useUiStore } from "../../stores/uiStore";
 import {
   Download,
   Trash2,
@@ -35,6 +36,19 @@ interface Model {
   downloadUrl?: string;
 }
 
+type GuideStatus = "ready" | "partial" | "missing" | "checking";
+
+interface GuideItemState {
+  status: GuideStatus;
+  detail: string;
+}
+
+interface GuideState {
+  asr: GuideItemState;
+  tts: GuideItemState;
+  loci: GuideItemState;
+}
+
 const typeLabels: Record<ModelType, string> = {
   asr: "ASR 模型",
   mt: "翻译模型",
@@ -51,6 +65,12 @@ const typeColors: Record<ModelType, string> = {
 
 const allTypes: ModelType[] = ["asr", "mt", "tts", "loci"];
 
+const defaultGuideState: GuideState = {
+  asr: { status: "checking", detail: "检测中..." },
+  tts: { status: "checking", detail: "检测中..." },
+  loci: { status: "checking", detail: "检测中..." },
+};
+
 const normalizeStatus = (status: string): Model["status"] => {
   switch (status) {
     case "ready":
@@ -64,11 +84,18 @@ const normalizeStatus = (status: string): Model["status"] => {
 };
 
 function ModelPage() {
+  const {
+    modelOnboardingOpen,
+    closeModelOnboarding,
+    completeModelOnboarding,
+  } = useUiStore();
   const [activeTab, setActiveTab] = useState<ModelType>("asr");
   const [models, setModels] = useState<Model[]>([]);
   const [modelsDir, setModelsDir] = useState<string>("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [guideState, setGuideState] = useState<GuideState>(defaultGuideState);
+  const [guideLoading, setGuideLoading] = useState(false);
 
   const filteredModels = useMemo(
     () => models.filter((m) => m.type === activeTab),
@@ -169,6 +196,95 @@ function ModelPage() {
     }
   };
 
+  const handleGuidedDownload = async (modelId: string, modelType: ModelType) => {
+    try {
+      await invoke<string>("download_model", {
+        model_id: modelId,
+        model_type: modelType,
+      });
+      await refreshGuideStatus();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  };
+
+  const refreshGuideStatus = useCallback(async () => {
+    setGuideLoading(true);
+    try {
+      const [asrList, ttsList, lociList] = await Promise.all([
+        invoke<BackendModelInfo[]>("list_models", { model_type: "asr" }),
+        invoke<BackendModelInfo[]>("list_models", { model_type: "tts" }),
+        invoke<BackendModelInfo[]>("list_models", { model_type: "loci" }),
+      ]);
+
+      const asrReady = asrList.some((m) => normalizeStatus(m.status) === "ready");
+      const sherpaTtsReady = ttsList.some(
+        (m) => m.id === "tts:sherpa-melo-local" && normalizeStatus(m.status) === "ready"
+      );
+      const anyTtsReady = ttsList.some((m) => normalizeStatus(m.status) === "ready");
+      const lociReady = lociList.some(
+        (m) => m.id.startsWith("loci:") && normalizeStatus(m.status) === "ready"
+      );
+
+      setGuideState({
+        asr: asrReady
+          ? { status: "ready", detail: "已检测到 ASR 可用模型" }
+          : { status: "missing", detail: "未检测到 ASR 模型，建议先下载" },
+        tts: sherpaTtsReady
+          ? { status: "ready", detail: "已检测到 Sherpa Melo 离线音色" }
+          : anyTtsReady
+            ? { status: "partial", detail: "检测到其他 TTS，建议补齐 Sherpa Melo" }
+            : { status: "missing", detail: "未检测到离线 TTS 模型" },
+        loci: lociReady
+          ? { status: "ready", detail: "已检测到 Loci GGUF 模型" }
+          : { status: "missing", detail: "可选增强，未安装也可运行" },
+      });
+    } catch (e) {
+      setGuideState({
+        asr: { status: "checking", detail: "检测失败，请稍后刷新" },
+        tts: { status: "checking", detail: "检测失败，请稍后刷新" },
+        loci: { status: "checking", detail: "检测失败，请稍后刷新" },
+      });
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setGuideLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!modelOnboardingOpen) return;
+    refreshGuideStatus();
+  }, [modelOnboardingOpen, refreshGuideStatus]);
+
+  const getGuideBadge = (state: GuideItemState) => {
+    if (state.status === "ready") {
+      return (
+        <span className="px-s py-xs bg-success/10 text-success text-xs font-medium rounded-small">
+          已就绪
+        </span>
+      );
+    }
+    if (state.status === "partial") {
+      return (
+        <span className="px-s py-xs bg-warning/10 text-warning text-xs font-medium rounded-small">
+          部分就绪
+        </span>
+      );
+    }
+    if (state.status === "missing") {
+      return (
+        <span className="px-s py-xs bg-error/10 text-error text-xs font-medium rounded-small">
+          缺失
+        </span>
+      );
+    }
+    return (
+      <span className="px-s py-xs bg-bg-tertiary text-text-tertiary text-xs font-medium rounded-small">
+        检测中
+      </span>
+    );
+  };
+
   const getStatusBadge = (model: Model) => {
     switch (model.status) {
       case "ready":
@@ -203,6 +319,105 @@ function ModelPage() {
 
   return (
     <div className="h-full flex flex-col p-l">
+      {modelOnboardingOpen && (
+        <div className="fixed inset-0 z-40 bg-black/40 flex items-center justify-center p-l">
+          <div className="w-full max-w-2xl rounded-large border border-bg-tertiary bg-white shadow-xl p-l">
+            <div className="text-l font-semibold text-text-primary mb-s">首启引导：推荐模型安装</div>
+            <p className="text-s text-text-secondary mb-m">
+              产品定位是本地优先、低延时、高准确。建议先准备这 3 类模型。每个按钮都会打开官方下载页。
+            </p>
+            <div className="mb-m flex items-center justify-end">
+              <button
+                type="button"
+                onClick={refreshGuideStatus}
+                className="btn-secondary px-m py-s inline-flex items-center gap-s"
+              >
+                {guideLoading ? <Loader2 size={14} className="animate-spin" /> : <RefreshCcw size={14} />}
+                刷新检测
+              </button>
+            </div>
+            <div className="space-y-s mb-m">
+              <div className="flex items-center justify-between p-s rounded-medium bg-bg-secondary/60">
+                <div>
+                  <div className="text-s font-medium text-text-primary flex items-center gap-s">
+                    1) ASR：中文 Paraformer / 英文 Zipformer
+                    {getGuideBadge(guideState.asr)}
+                  </div>
+                  <div className="text-xs text-text-secondary">放到 models/asr，可提升识别稳定性与准确率</div>
+                  <div className="text-xs text-text-tertiary mt-xs">{guideState.asr.detail}</div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => handleGuidedDownload("asr:sherpa-multi-zipformer", "asr")}
+                  className="btn-primary px-m py-s"
+                >
+                  下载 ASR
+                </button>
+              </div>
+              <div className="flex items-center justify-between p-s rounded-medium bg-bg-secondary/60">
+                <div>
+                  <div className="text-s font-medium text-text-primary flex items-center gap-s">
+                    2) TTS：Sherpa Melo（离线音色）
+                    {getGuideBadge(guideState.tts)}
+                  </div>
+                  <div className="text-xs text-text-secondary">支持本地男/女声，适合会议同传</div>
+                  <div className="text-xs text-text-tertiary mt-xs">{guideState.tts.detail}</div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => handleGuidedDownload("tts:sherpa-melo", "tts")}
+                  className="btn-primary px-m py-s"
+                >
+                  下载 TTS
+                </button>
+              </div>
+              <div className="flex items-center justify-between p-s rounded-medium bg-bg-secondary/60">
+                <div>
+                  <div className="text-s font-medium text-text-primary flex items-center gap-s">
+                    3) 翻译增强：Loci GGUF（可选）
+                    {getGuideBadge(guideState.loci)}
+                  </div>
+                  <div className="text-xs text-text-secondary">默认内置翻译可直接用，Loci 可提升复杂句质量</div>
+                  <div className="text-xs text-text-tertiary mt-xs">{guideState.loci.detail}</div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => handleGuidedDownload("loci:qwen2.5-0.5b", "loci")}
+                  className="btn-primary px-m py-s"
+                >
+                  下载 Loci
+                </button>
+              </div>
+            </div>
+            <div className="flex items-center justify-between">
+              <button
+                type="button"
+                onClick={handleOpenModelsDir}
+                className="btn-secondary px-m py-s"
+              >
+                打开模型目录
+              </button>
+              <div className="flex items-center gap-s">
+                <button
+                  type="button"
+                  onClick={closeModelOnboarding}
+                  className="btn-secondary px-m py-s"
+                >
+                  稍后再说
+                </button>
+                <button
+                  type="button"
+                  onClick={completeModelOnboarding}
+                  className="btn-primary px-m py-s"
+                >
+                  我已了解
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Tabs */}
       <div className="flex items-center gap-s mb-l">
         {(Object.keys(typeLabels) as ModelType[]).map((type) => (
