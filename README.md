@@ -1,98 +1,87 @@
 # LocalTrans
 
-LocalTrans 的定位：一款“本地优先、低延迟”的实时语音转译桌面工具，面向会议/直播/跨语种沟通场景。
+LocalTrans is a Tauri v2 desktop app with a unified GUI + CLI runtime.
+This repository is the refactored codebase (migrated from `LocalTrans-old`).
 
-- 本地处理优先：音频采集、ASR、翻译尽量在本机完成
-- 会议场景友好：支持将 TTS 输出到虚拟声卡（如 VB-Audio Cable），方便送入会议软件
-- 关注实时性：端到端目标是“边说边翻译”的体验（延迟可诊断）
+Chinese doc: [README_CN.md](./README_CN.md)
 
-## 功能概览
+## Repository Structure
 
-- `会话`：启动/暂停/停止实时转译；显示实时文本与历史记录；可一键朗读翻译结果
-- `设置`：TTS 输出设备选择、虚拟音频驱动检测与推荐、ASR/性能参数
-- `模型`：读取本机模型目录并展示已安装模型（下载/删除仍在接入中）
-- `诊断`：TTS/翻译/麦克风采集测试与环境信息
+- `src/`: frontend (React + Vite)
+- `src-tauri/`: backend/runtime (Rust + Tauri)
+- `src-tauri/src/commands/`: shared command layer for GUI invoke and CLI
+- `src-tauri/src/cli/parser.rs`: CLI command definitions
+- `.github/workflows/build-windows.yml`: CI build workflow
 
-## 数据流（核心架构）
+## Local Prerequisites (Windows)
 
-Rust 后端实时管线（`src-tauri/src/pipeline`）：
+- Node.js 20+
+- Rust stable
+- A valid `libclang.dll` path for real ASR build
 
-1) 音频采集（CPAL）
-2) 统一为 mono f32，按需重采样到 16kHz
-3) Streaming ASR（默认走 sherpa 后端；需要模型）
-4) 翻译（Loci/NLLB 等；目前未配置模型时会走占位实现）
-5) 通过 Tauri events 向前端推送：
-   - `pipeline:partial-transcription`
-   - `pipeline:final-transcription`
-   - `pipeline:translation`
-   - `pipeline:state-changed`
-   - `pipeline:error`
+Recommended (conda):
 
-前端（`src/pages/SessionPage`）监听事件并更新 UI/历史记录，翻译到达后可自动触发 TTS。
-
-## 开发运行
-
-### 1) 安装依赖
-
-```bash
-npm install
+```powershell
+D:\miniconda3\Scripts\conda.exe run -n localtrans python -m pip install -U libclang
 ```
 
-### 2) 前端开发（可单独跑 UI）
+Then set:
 
-```bash
-npm run dev
+```powershell
+$env:LIBCLANG_PATH="C:\Users\<you>\.conda\envs\localtrans\Lib\site-packages\clang\native"
 ```
 
-### 3) Tauri 桌面开发（推荐）
+## Run & Build
 
-```bash
+```powershell
+npm ci
 npm run tauri dev
 ```
 
-备注：`src-tauri/tauri.conf.json` 已配置 `beforeDevCommand`，通常只需要跑 `tauri dev`。
+```powershell
+$env:LIBCLANG_PATH="C:\Users\<you>\.conda\envs\localtrans\Lib\site-packages\clang\native"
+npm run tauri build
+```
 
-## Windows 构建注意：libclang（bindgen）
+Portable release binary:
 
-默认启用 `sherpa-backend`（见 `src-tauri/Cargo.toml` 的 features），其依赖 `bindgen` 生成绑定，需要能找到 `libclang.dll`。
+```text
+src-tauri/target/release/localtrans.exe
+```
 
-如果你遇到：`Unable to find libclang ... set the LIBCLANG_PATH environment variable`，请按以下方式处理：
-
-1) 安装 LLVM/Clang（或 Visual Studio Build Tools 自带的 LLVM）
-2) 设置环境变量 `LIBCLANG_PATH` 为包含 `libclang.dll` 的目录
-
-PowerShell 示例：
+## CLI Examples
 
 ```powershell
-$env:LIBCLANG_PATH = "D:\Program Files (x86)\Microsoft Visual Studio\18\BuildTools\VC\Tools\Llvm\x64\bin"
-cd src-tauri
-cargo check
+.\src-tauri\target\release\localtrans.exe --help
+.\src-tauri\target\release\localtrans.exe version
+.\src-tauri\target\release\localtrans.exe process-file .\README.md
 ```
 
-Git Bash 示例：
-
-```bash
-export LIBCLANG_PATH="/d/Program Files (x86)/Microsoft Visual Studio/18/BuildTools/VC/Tools/Llvm/x64/bin"
-cd src-tauri
-cargo check
+```powershell
+.\src-tauri\target\release\localtrans.exe session-start --source-lang en --target-lang zh
+.\src-tauri\target\release\localtrans.exe session-status
+.\src-tauri\target\release\localtrans.exe session-pause
+.\src-tauri\target\release\localtrans.exe session-resume
+.\src-tauri\target\release\localtrans.exe session-stop
 ```
 
-## 模型目录
+## GitHub Actions
 
-后端会使用系统的 Local App Data 目录作为模型根目录（命令：`get_models_dir`）。常见位置：
+Workflow file:
 
-- Windows：`%LOCALAPPDATA%\LocalTrans\models`
+- `.github/workflows/build-windows.yml`
 
-建议的子目录结构（逐步完善中）：
+Behavior:
 
-- `asr/`：ASR 模型（sherpa zipformer 等）
-- `vad/`：VAD 模型（例如 `silero_vad.onnx`）
-- `tts/piper/`：Piper/VITS ONNX 模型
-- `translation/` 或 `mt/`：机器翻译模型（待接入）
-- `loci/`：本地 LLM 模型（待接入）
+- triggers on `push`, `pull_request`, and `workflow_dispatch`
+- uses `windows-latest`
+- installs LLVM and sets `LIBCLANG_PATH`
+- runs `npm ci` and `npm run tauri build`
+- uploads:
+  - `src-tauri/target/release/localtrans.exe`
+  - `src-tauri/target/release/bundle/**`
 
-## 隐私说明
+## Output Convention
 
-- 目标是“音频不出本地”：ASR/翻译尽量本地完成
-- 当前默认的 `Edge TTS` 属于在线服务：会将要合成的文本发送至微软服务以获得语音音频
-- 若你对离线 TTS 有强需求，可切换到自定义音色/本地 TTS（需模型/本地服务，仍在完善）
+- success: JSON to stdout
+- failure: JSON to stderr, exit code `1`
