@@ -65,6 +65,36 @@ src-tauri/target/release/localtrans.exe
 .\src-tauri\target\release\localtrans.exe session-stop
 ```
 
+## CLI Command Matrix
+
+| Command | Purpose | Example |
+|---|---|---|
+| `hello` | Connectivity smoke test | `localtrans.exe hello --name Alice` |
+| `version` | Print app version | `localtrans.exe version` |
+| `process-file` | Process input file | `localtrans.exe process-file .\README.md` |
+| `download-model` | Download model metadata/runtime payload | `localtrans.exe download-model --model-type asr --model-id asr:sherpa-multi-zipformer` |
+| `list-models` | List installed models by type | `localtrans.exe list-models --model-type asr` |
+| `delete-model` | Delete model by id | `localtrans.exe delete-model --model-id asr:sherpa-multi-zipformer` |
+| `session-start` | Start realtime session | `localtrans.exe session-start --source-lang en --target-lang zh` |
+| `session-pause` | Pause realtime session | `localtrans.exe session-pause` |
+| `session-resume` | Resume realtime session | `localtrans.exe session-resume` |
+| `session-stop` | Stop realtime session | `localtrans.exe session-stop` |
+| `session-status` | Query session state | `localtrans.exe session-status` |
+| `session-stats` | Query session metrics | `localtrans.exe session-stats` |
+| `session-history` | Query session history | `localtrans.exe session-history --count 20` |
+| `session-clear-history` | Clear history and metrics | `localtrans.exe session-clear-history` |
+| `session-export-history` | Export history to file | `localtrans.exe session-export-history --output .\history.json` |
+| `session-update-languages` | Update language direction at runtime | `localtrans.exe session-update-languages --source-lang en --target-lang zh` |
+| `translate-text` | One-shot text translation | `localtrans.exe translate-text --text "Hello" --source-lang en --target-lang zh` |
+| `log-status` | Query runtime log state | `localtrans.exe log-status` |
+| `tts-voices` | List TTS voices | `localtrans.exe tts-voices --language zh` |
+| `tts-config` | Query TTS config | `localtrans.exe tts-config` |
+| `tts-default-voice` | Query default voice by language | `localtrans.exe tts-default-voice --language zh` |
+| `tts-custom-voices` | Scan custom/local voice models | `localtrans.exe tts-custom-voices --models-dir .\models` |
+| `config-set` | Set config value | `localtrans.exe config-set --key translationEngine --value nllb` |
+| `config-get` | Get config value | `localtrans.exe config-get --key translationEngine` |
+| `call` | Generic command bridge (internal invoke style) | `localtrans.exe call --name get_audio_devices --args-json "{}"` |
+
 ## GitHub Actions
 
 Workflow file:

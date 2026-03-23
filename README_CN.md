@@ -65,6 +65,36 @@ src-tauri/target/release/localtrans.exe
 .\src-tauri\target\release\localtrans.exe session-stop
 ```
 
+## CLI 命令矩阵
+
+| 命令 | 作用 | 示例 |
+|---|---|---|
+| `hello` | 连通性冒烟测试 | `localtrans.exe hello --name Alice` |
+| `version` | 输出版本信息 | `localtrans.exe version` |
+| `process-file` | 处理输入文件 | `localtrans.exe process-file .\README.md` |
+| `download-model` | 下载模型元数据/运行资源 | `localtrans.exe download-model --model-type asr --model-id asr:sherpa-multi-zipformer` |
+| `list-models` | 按类型列出已安装模型 | `localtrans.exe list-models --model-type asr` |
+| `delete-model` | 按 id 删除模型 | `localtrans.exe delete-model --model-id asr:sherpa-multi-zipformer` |
+| `session-start` | 启动实时会话 | `localtrans.exe session-start --source-lang en --target-lang zh` |
+| `session-pause` | 暂停实时会话 | `localtrans.exe session-pause` |
+| `session-resume` | 恢复实时会话 | `localtrans.exe session-resume` |
+| `session-stop` | 停止实时会话 | `localtrans.exe session-stop` |
+| `session-status` | 查询会话状态 | `localtrans.exe session-status` |
+| `session-stats` | 查询会话指标 | `localtrans.exe session-stats` |
+| `session-history` | 查询会话历史 | `localtrans.exe session-history --count 20` |
+| `session-clear-history` | 清空历史和指标 | `localtrans.exe session-clear-history` |
+| `session-export-history` | 导出历史到文件 | `localtrans.exe session-export-history --output .\history.json` |
+| `session-update-languages` | 运行中切换语言方向 | `localtrans.exe session-update-languages --source-lang en --target-lang zh` |
+| `translate-text` | 单次文本翻译 | `localtrans.exe translate-text --text "Hello" --source-lang en --target-lang zh` |
+| `log-status` | 查询日志状态 | `localtrans.exe log-status` |
+| `tts-voices` | 列出 TTS 音色 | `localtrans.exe tts-voices --language zh` |
+| `tts-config` | 查询 TTS 配置 | `localtrans.exe tts-config` |
+| `tts-default-voice` | 查询语言默认音色 | `localtrans.exe tts-default-voice --language zh` |
+| `tts-custom-voices` | 扫描本地/自定义音色模型 | `localtrans.exe tts-custom-voices --models-dir .\models` |
+| `config-set` | 设置配置项 | `localtrans.exe config-set --key translationEngine --value nllb` |
+| `config-get` | 获取配置项 | `localtrans.exe config-get --key translationEngine` |
+| `call` | 通用命令桥（内部 invoke 风格） | `localtrans.exe call --name get_audio_devices --args-json "{}"` |
+
 ## GitHub 自动构建
 
 工作流文件：
