@@ -81,6 +81,50 @@ src-tauri/target/release/localtrans.exe
   - `src-tauri/target/release/localtrans.exe`
   - `src-tauri/target/release/bundle/**`
 
+## 开发说明
+
+### 安装依赖
+
+```powershell
+npm ci
+```
+
+### 仅运行前端
+
+```powershell
+npm run dev
+```
+
+### 桌面调试运行
+
+```powershell
+npm run tauri dev
+```
+
+### 本地 release 打包
+
+```powershell
+$env:LIBCLANG_PATH="C:\Users\<你>\.conda\envs\localtrans\Lib\site-packages\clang\native"
+npm run tauri build
+```
+
+### 后端快速检查
+
+```powershell
+$env:LIBCLANG_PATH="C:\Users\<你>\.conda\envs\localtrans\Lib\site-packages\clang\native"
+cd src-tauri
+cargo check -q
+```
+
+### 常见问题
+
+- `Unable to find libclang`：
+  - 确认存在 `libclang.dll`
+  - 确认 `LIBCLANG_PATH` 指向该文件所在目录
+- CLI 与 GUI 状态不同步：
+  - 用 release 可执行文件按顺序验证：
+    - `session-start -> session-status -> session-pause -> session-resume -> session-stop`
+
 ## 输出约定
 
 - 成功：JSON 输出到 stdout

@@ -1,9 +1,4 @@
-import React from "react";
-import ReactDOM from "react-dom/client";
-import App from "./App";
-import "./styles/globals.css";
-
-const rootEl = document.getElementById("root") as HTMLElement;
+const rootEl = document.getElementById("root");
 
 function escapeHtml(input: string): string {
   return input
@@ -13,8 +8,9 @@ function escapeHtml(input: string): string {
 }
 
 function showFatal(message: string): void {
+  if (!rootEl) return;
   rootEl.innerHTML = `<div style="padding:16px;font-family:Consolas,monospace;white-space:pre-wrap;color:#b00020;background:#fff;">
-LocalTrans UI failed to start.
+LocalTrans bootstrap failed.
 
 ${escapeHtml(message)}
 </div>`;
@@ -30,13 +26,8 @@ window.addEventListener("unhandledrejection", (event) => {
   showFatal(`Unhandled rejection:\n${reason}`);
 });
 
-try {
-  ReactDOM.createRoot(rootEl).render(
-    <React.StrictMode>
-      <App />
-    </React.StrictMode>,
-  );
-} catch (error) {
+import("./main").catch((error) => {
   const message = error instanceof Error ? error.stack ?? error.message : String(error);
   showFatal(message);
-}
+});
+

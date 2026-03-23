@@ -81,6 +81,50 @@ Behavior:
   - `src-tauri/target/release/localtrans.exe`
   - `src-tauri/target/release/bundle/**`
 
+## Development Guide
+
+### Install dependencies
+
+```powershell
+npm ci
+```
+
+### Run frontend only
+
+```powershell
+npm run dev
+```
+
+### Run desktop app in dev mode
+
+```powershell
+npm run tauri dev
+```
+
+### Build release locally
+
+```powershell
+$env:LIBCLANG_PATH="C:\Users\<you>\.conda\envs\localtrans\Lib\site-packages\clang\native"
+npm run tauri build
+```
+
+### Backend check
+
+```powershell
+$env:LIBCLANG_PATH="C:\Users\<you>\.conda\envs\localtrans\Lib\site-packages\clang\native"
+cd src-tauri
+cargo check -q
+```
+
+### Typical troubleshooting
+
+- `Unable to find libclang`:
+  - verify `libclang.dll` exists
+  - ensure `LIBCLANG_PATH` points to the directory containing that file
+- CLI/GUI state mismatch:
+  - test with release binary:
+    - `session-start -> session-status -> session-pause -> session-resume -> session-stop`
+
 ## Output Convention
 
 - success: JSON to stdout

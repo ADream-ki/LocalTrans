@@ -1,60 +1,36 @@
-# OS
-.DS_Store
-Thumbs.db
-Desktop.ini
-
-# Editors / IDE
-.idea/
-.vscode/
-*.swp
-*.swo
-
-# Node / Vite
-node_modules/
-dist/
-*.tsbuildinfo
+# Logs
+logs
+*.log
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
+lerna-debug.log*
 
-# Local logs / runtime dumps
-*.log
-*.out
-*.err
-build.log
-dev.log
-tauri_dev.log
-*.pid
-nul
+node_modules
+dist
+dist-ssr
+*.local
+src-tauri/target
+target
 
-# Env / secrets
-.env
-.env.*
-!.env.example
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
 
-# Rust / Cargo / Tauri build artifacts
-target/
-src-tauri/target/
-src-tauri/gen/
-src-tauri/sherpa-docs/
-
-# Temporary / backup files
-*.tmp
-*.temp
-*.bak
-*.orig
-src-tauri/Cargo.toml.bak
-tmp_*.wav
-tmp_*.flac
-cli_test_report*.txt
-cli_test_report*.json
-release-assets/
-
-# Model assets (large files, do not commit)
-models/
-src-tauri/models/
-**/*.onnx
-**/*.gguf
-**/*.tar.bz2
-**/*.bin
+# Local runtime/temp artifacts
+tools/
+tmp_stress/
+tmp_stress_run/
+src-tauri/.localtrans-config.json
+src-tauri/.localtrans-session.json
+src-tauri/session-history-export.json
+src-tauri/temp_errors.txt
+prompt.md

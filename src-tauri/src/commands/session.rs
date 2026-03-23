@@ -1,33 +1,15 @@
-//! Session and pipeline commands for Tauri
-//! 
-//! This module provides the Tauri command handlers for managing
-//! real-time transcription/translation sessions.
+use std::path::Path;
+use std::sync::{Arc, OnceLock};
 
+use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, State};
-use std::sync::Arc;
-use std::path::{Path, PathBuf};
-use parking_lot::Mutex as SyncMutex;
-use uuid::Uuid;
+use tauri::AppHandle;
 
-use crate::pipeline::{
-    RealtimePipeline, PipelineConfig, PipelineState, PipelineStats,
-    HistoryItem,
-};
+use crate::error::{AppError, AppResult};
+use crate::pipeline::{HistoryItem, PipelineConfig, PipelineState, PipelineStats, RealtimePipeline};
 use crate::session_bus;
 
-/// Information about session status
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SessionStatusInfo {
-    pub is_running: bool,
-    pub status: String,
-    pub source_lang: String,
-    pub target_lang: String,
-    pub bidirectional: bool,
-}
-
-/// Session configuration for creation
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionConfig {
     pub source_lang: String,
@@ -36,65 +18,13 @@ pub struct SessionConfig {
     pub peer_input_device: Option<String>,
     pub bidirectional: bool,
     pub loci_enhanced: bool,
-    /// VAD frame size in milliseconds (controls latency vs stability)
     pub vad_frame_ms: Option<u32>,
     pub vad_threshold: Option<f32>,
-    /// Streaming partial translation interval
-    pub stream_translation_interval_ms: Option<u64>,
-    /// Streaming partial translation minimum chars
-    pub stream_translation_min_chars: Option<usize>,
+    pub stream_translation_interval_ms: Option<u32>,
+    pub stream_translation_min_chars: Option<u32>,
 }
 
-impl Default for SessionConfig {
-    fn default() -> Self {
-        Self {
-            source_lang: "en".to_string(),
-            target_lang: "zh".to_string(),
-            input_device: None,
-            peer_input_device: None,
-            bidirectional: false,
-            // Lower default latency: use lightweight translator unless explicitly enabled.
-            loci_enhanced: false,
-            vad_frame_ms: None,
-            vad_threshold: None,
-            stream_translation_interval_ms: None,
-            stream_translation_min_chars: None,
-        }
-    }
-}
-
-impl From<SessionConfig> for PipelineConfig {
-    fn from(config: SessionConfig) -> Self {
-        let mut pipeline_config = PipelineConfig {
-            source_lang: config.source_lang,
-            target_lang: config.target_lang,
-            input_device: config.input_device,
-            peer_input_device: config.peer_input_device,
-            bidirectional: config.bidirectional,
-            loci_enhanced: config.loci_enhanced,
-            ..Default::default()
-        };
-
-        if let Some(vad_frame_ms) = config.vad_frame_ms {
-            pipeline_config.vad_frame_ms = vad_frame_ms;
-        }
-        
-        if let Some(threshold) = config.vad_threshold {
-            pipeline_config.vad_threshold = threshold;
-        }
-        if let Some(v) = config.stream_translation_interval_ms {
-            pipeline_config.stream_translation_interval_ms = v.clamp(300, 5000);
-        }
-        if let Some(v) = config.stream_translation_min_chars {
-            pipeline_config.stream_translation_min_chars = v.clamp(2, 64);
-        }
-        
-        pipeline_config
-    }
-}
-
-/// Statistics response for the frontend
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Serialize)]
 pub struct SessionStats {
     pub total_audio_duration_ms: u64,
     pub speech_duration_ms: u64,
@@ -104,28 +34,19 @@ pub struct SessionStats {
     pub asr_average_latency_ms: f32,
     pub translation_average_latency_ms: f32,
     pub tts_average_latency_ms: f32,
-    pub error_count: u64,
+    pub timestamp: String,
 }
 
-impl From<PipelineStats> for SessionStats {
-    fn from(stats: PipelineStats) -> Self {
-        Self {
-            total_audio_duration_ms: stats.total_audio_duration_ms,
-            speech_duration_ms: stats.speech_duration_ms,
-            transcription_count: stats.transcription_count,
-            translation_count: stats.translation_count,
-            average_latency_ms: stats.average_latency_ms(),
-            asr_average_latency_ms: stats.average_latency_ms(),
-            translation_average_latency_ms: 0.0,
-            tts_average_latency_ms: 0.0,
-            error_count: stats.error_count,
-        }
-    }
+#[derive(Debug, Serialize)]
+pub struct SessionStatus {
+    pub state: String,
+    pub label: String,
+    pub is_running: bool,
 }
 
-/// History item for frontend display
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct HistoryItemInfo {
+#[serde(rename_all = "camelCase")]
+pub struct SessionHistoryItem {
     pub id: String,
     pub source_text: String,
     pub translated_text: String,
@@ -133,152 +54,247 @@ pub struct HistoryItemInfo {
     pub target_lang: String,
     pub timestamp: String,
     pub confidence: f32,
-    pub loci_enhanced: bool,
 }
 
-impl From<HistoryItem> for HistoryItemInfo {
-    fn from(item: HistoryItem) -> Self {
-        Self {
-            id: item.id,
-            source_text: item.source_text,
-            translated_text: item.translated_text,
-            source_lang: item.source_lang,
-            target_lang: item.target_lang,
-            timestamp: item.timestamp.to_rfc3339(),
-            confidence: item.confidence,
-            loci_enhanced: item.loci_enhanced,
-        }
+fn rt() -> &'static tokio::runtime::Runtime {
+    static RT: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
+    RT.get_or_init(|| {
+        tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .worker_threads(2)
+            .build()
+            .expect("failed to init tokio runtime for session")
+    })
+}
+
+fn pipeline_state() -> &'static Mutex<Option<Arc<RealtimePipeline>>> {
+    static PIPE: OnceLock<Mutex<Option<Arc<RealtimePipeline>>>> = OnceLock::new();
+    PIPE.get_or_init(|| Mutex::new(None))
+}
+
+fn to_status(state: PipelineState) -> SessionStatus {
+    match state {
+        PipelineState::Idle => SessionStatus {
+            state: "idle".to_string(),
+            label: "已停止".to_string(),
+            is_running: false,
+        },
+        PipelineState::Initializing => SessionStatus {
+            state: "initializing".to_string(),
+            label: "启动中".to_string(),
+            is_running: true,
+        },
+        PipelineState::Running => SessionStatus {
+            state: "running".to_string(),
+            label: "实时转译中".to_string(),
+            is_running: true,
+        },
+        PipelineState::Paused => SessionStatus {
+            state: "paused".to_string(),
+            label: "已暂停".to_string(),
+            is_running: true,
+        },
+        PipelineState::Stopping => SessionStatus {
+            state: "stopping".to_string(),
+            label: "停止中".to_string(),
+            is_running: true,
+        },
+        PipelineState::Error => SessionStatus {
+            state: "error".to_string(),
+            label: "错误".to_string(),
+            is_running: false,
+        },
     }
 }
 
-/// Start a new transcription/translation session
-#[tauri::command]
-pub async fn start_session(
-    config: SessionConfig,
-    app_handle: AppHandle,
-    state: State<'_, SyncMutex<Option<Arc<RealtimePipeline>>>>,
-) -> Result<(), String> {
-    let request_id = Uuid::new_v4().to_string();
-    tracing::info!(
-        request_id = %request_id,
-        source_lang = %config.source_lang,
-        target_lang = %config.target_lang,
-        input_device = ?config.input_device,
-        peer_input_device = ?config.peer_input_device,
-        bidirectional = config.bidirectional,
-        loci_enhanced = config.loci_enhanced,
-        "start_session requested"
-    );
+fn to_session_stats(stats: PipelineStats) -> SessionStats {
+    SessionStats {
+        total_audio_duration_ms: stats.total_audio_duration_ms,
+        speech_duration_ms: stats.speech_duration_ms,
+        transcription_count: stats.transcription_count,
+        translation_count: stats.translation_count,
+        average_latency_ms: stats.average_latency_ms(),
+        asr_average_latency_ms: stats.average_latency_ms(),
+        translation_average_latency_ms: 0.0,
+        tts_average_latency_ms: 0.0,
+        timestamp: chrono_like_timestamp(),
+    }
+}
 
-    // Check if there's an existing running session
-    {
-        let existing = state.lock().clone();
-        if let Some(ref pipeline) = existing {
-            let current_state = pipeline.get_state().await;
-            if current_state == PipelineState::Running {
-                tracing::warn!(
-                    request_id = %request_id,
-                    state = %current_state,
-                    "start_session rejected: already running"
-                );
-                return Err("A session is already running. Please stop it first.".to_string());
+fn map_history_item(item: HistoryItem) -> SessionHistoryItem {
+    SessionHistoryItem {
+        id: item.id,
+        source_text: item.source_text,
+        translated_text: item.translated_text,
+        source_lang: item.source_lang,
+        target_lang: item.target_lang,
+        timestamp: item.timestamp.to_rfc3339(),
+        confidence: item.confidence,
+    }
+}
+
+fn ensure_not_running() -> AppResult<()> {
+    let current = pipeline_state().lock();
+    if let Some(pipe) = current.as_ref() {
+        let state = rt().block_on(pipe.get_state());
+        if matches!(state, PipelineState::Running | PipelineState::Initializing) {
+            return Err(AppError::InvalidState("session is already running".to_string()));
+        }
+    }
+    Ok(())
+}
+
+fn cfg_to_pipeline(config: SessionConfig) -> PipelineConfig {
+    let mut pipeline = PipelineConfig {
+        source_lang: config.source_lang,
+        target_lang: config.target_lang,
+        input_device: config.input_device,
+        peer_input_device: config.peer_input_device,
+        bidirectional: config.bidirectional,
+        loci_enhanced: config.loci_enhanced,
+        ..Default::default()
+    };
+    if let Some(v) = config.vad_frame_ms {
+        pipeline.vad_frame_ms = v;
+    }
+    if let Some(v) = config.vad_threshold {
+        pipeline.vad_threshold = v;
+    }
+    if let Some(v) = config.stream_translation_interval_ms {
+        pipeline.stream_translation_interval_ms = u64::from(v).clamp(300, 5000);
+    }
+    if let Some(v) = config.stream_translation_min_chars {
+        pipeline.stream_translation_min_chars = usize::try_from(v).unwrap_or(8).clamp(2, 64);
+    }
+    pipeline
+}
+
+fn write_runtime_state(
+    status: &str,
+    source_lang: String,
+    target_lang: String,
+    bidirectional: bool,
+) {
+    let _ = session_bus::write_state(&session_bus::SessionRuntimeState {
+        pid: std::process::id(),
+        status: status.to_string(),
+        source_lang,
+        target_lang,
+        bidirectional,
+        tts_enabled: true,
+        start_unix_ms: session_bus::now_unix_ms(),
+        last_heartbeat_unix_ms: session_bus::now_unix_ms(),
+        utterance_count: 0,
+        error_count: 0,
+        last_error: None,
+    });
+}
+
+fn update_runtime_status(status: &str) {
+    if let Some(mut st) = session_bus::read_state() {
+        st.status = status.to_string();
+        st.last_heartbeat_unix_ms = session_bus::now_unix_ms();
+        let _ = session_bus::write_state(&st);
+    }
+}
+
+fn apply_pending_control(pipe: Arc<RealtimePipeline>) {
+    let Some(control) = session_bus::read_control() else {
+        return;
+    };
+
+    match control.command.as_str() {
+        "pause" => {
+            if rt().block_on(pipe.pause()).is_ok() {
+                update_runtime_status("paused");
             }
         }
+        "resume" => {
+            if rt().block_on(pipe.resume()).is_ok() {
+                update_runtime_status("running");
+            }
+        }
+        "stop" => {
+            if rt().block_on(pipe.stop()).is_ok() {
+                *pipeline_state().lock() = None;
+                write_runtime_state("idle", String::new(), String::new(), false);
+            }
+        }
+        "update_languages" => {
+            if let Some(src) = control.source_lang.as_deref() {
+                let _ = rt().block_on(pipe.set_source_lang(src));
+            }
+            if let Some(mut st) = session_bus::read_state() {
+                if let Some(src) = control.source_lang {
+                    st.source_lang = src;
+                }
+                if let Some(dst) = control.target_lang {
+                    st.target_lang = dst;
+                }
+                st.last_heartbeat_unix_ms = session_bus::now_unix_ms();
+                let _ = session_bus::write_state(&st);
+            }
+        }
+        _ => {}
+    }
+
+    session_bus::clear_control();
+}
+
+#[tauri::command]
+pub fn start_session(app: AppHandle, config: SessionConfig) -> AppResult<()> {
+    ensure_not_running()?;
+    if !super::model::has_ready_model("asr")? {
+        return Err(AppError::InvalidState(
+            "ASR model is required before starting session".to_string(),
+        ));
     }
 
     if is_english_only_asr_model() && config.source_lang != "en" {
         tracing::warn!(
-            request_id = %request_id,
             source_lang = %config.source_lang,
-            "english-only ASR model detected; session will continue and rely on runtime model resolution"
+            "english-only ASR model detected; session may degrade to english-only"
         );
     }
 
-    // Create pipeline config
-    let pipeline_config: PipelineConfig = config.into();
-
-    // Create new pipeline
+    let pipeline_cfg = cfg_to_pipeline(config);
     let pipeline = Arc::new(
-        RealtimePipeline::new(app_handle, pipeline_config.clone())
-            .map_err(|e| format!("Failed to create pipeline: {}", e))?
+        RealtimePipeline::new(app, pipeline_cfg.clone())
+            .map_err(|e| AppError::InvalidState(format!("create pipeline failed: {e}")))?,
     );
+    rt().block_on(pipeline.start())
+        .map_err(|e| AppError::InvalidState(format!("start pipeline failed: {e}")))?;
+    *pipeline_state().lock() = Some(pipeline);
 
-    // Start the pipeline
-    pipeline.start().await
-        .map_err(|e| format!("Failed to start pipeline: {}", e))?;
-
-    // Store the pipeline
-    *state.lock() = Some(pipeline);
-    let _ = session_bus::write_state(&session_bus::SessionRuntimeState {
-        pid: std::process::id(),
-        status: "running".to_string(),
-        source_lang: pipeline_config.source_lang.clone(),
-        target_lang: pipeline_config.target_lang.clone(),
-        bidirectional: pipeline_config.bidirectional,
-        tts_enabled: true,
-        start_unix_ms: session_bus::now_unix_ms(),
-        last_heartbeat_unix_ms: session_bus::now_unix_ms(),
-        utterance_count: 0,
-        error_count: 0,
-        last_error: None,
-    });
-    tracing::info!(request_id = %request_id, "start_session completed");
-
+    write_runtime_state(
+        "running",
+        pipeline_cfg.source_lang,
+        pipeline_cfg.target_lang,
+        pipeline_cfg.bidirectional,
+    );
     Ok(())
 }
 
-/// Stop the current session
 #[tauri::command]
-pub async fn stop_session(
-    state: State<'_, SyncMutex<Option<Arc<RealtimePipeline>>>>,
-) -> Result<(), String> {
-    let request_id = Uuid::new_v4().to_string();
-    tracing::info!(request_id = %request_id, "stop_session requested");
-
-    let pipeline = {
-        let guard = state.lock();
-        guard.clone()
-    };
-    
-    if let Some(pipeline) = pipeline {
-        pipeline.stop().await
-            .map_err(|e| format!("Failed to stop pipeline: {}", e))?;
-        tracing::info!(request_id = %request_id, "stop_session stopped active pipeline");
+pub fn stop_session(_app: AppHandle) -> AppResult<()> {
+    let pipe = pipeline_state().lock().clone();
+    if let Some(pipe) = pipe {
+        rt().block_on(pipe.stop())
+            .map_err(|e| AppError::InvalidState(format!("stop pipeline failed: {e}")))?;
     } else {
         let _ = session_bus::write_control("stop", None, None);
-        tracing::info!(request_id = %request_id, "stop_session no active pipeline");
     }
-    
-    *state.lock() = None;
-    let _ = session_bus::write_state(&session_bus::SessionRuntimeState {
-        pid: std::process::id(),
-        status: "idle".to_string(),
-        source_lang: String::new(),
-        target_lang: String::new(),
-        bidirectional: false,
-        tts_enabled: true,
-        start_unix_ms: session_bus::now_unix_ms(),
-        last_heartbeat_unix_ms: session_bus::now_unix_ms(),
-        utterance_count: 0,
-        error_count: 0,
-        last_error: None,
-    });
-    tracing::info!(request_id = %request_id, "stop_session completed");
-    
+    *pipeline_state().lock() = None;
+    write_runtime_state("idle", String::new(), String::new(), false);
     Ok(())
 }
 
-/// Pause the current session
 #[tauri::command]
-pub async fn pause_session(
-    state: State<'_, SyncMutex<Option<Arc<RealtimePipeline>>>>,
-) -> Result<(), String> {
-    tracing::info!("pause_session requested");
-    let pipeline = state.lock().clone();
-    
-    if let Some(pipeline) = pipeline {
-        pipeline.pause().await
-            .map_err(|e| format!("Failed to pause pipeline: {}", e))?;
+pub fn pause_session(_app: AppHandle) -> AppResult<()> {
+    let pipe = pipeline_state().lock().clone();
+    if let Some(pipe) = pipe {
+        rt().block_on(pipe.pause())
+            .map_err(|e| AppError::InvalidState(format!("pause pipeline failed: {e}")))?;
         if let Some(mut st) = session_bus::read_state() {
             st.status = "paused".to_string();
             st.last_heartbeat_unix_ms = session_bus::now_unix_ms();
@@ -286,23 +302,16 @@ pub async fn pause_session(
         }
     } else {
         let _ = session_bus::write_control("pause", None, None);
-        return Ok(());
     }
-    
     Ok(())
 }
 
-/// Resume a paused session
 #[tauri::command]
-pub async fn resume_session(
-    state: State<'_, SyncMutex<Option<Arc<RealtimePipeline>>>>,
-) -> Result<(), String> {
-    tracing::info!("resume_session requested");
-    let pipeline = state.lock().clone();
-    
-    if let Some(pipeline) = pipeline {
-        pipeline.resume().await
-            .map_err(|e| format!("Failed to resume pipeline: {}", e))?;
+pub fn resume_session(_app: AppHandle) -> AppResult<()> {
+    let pipe = pipeline_state().lock().clone();
+    if let Some(pipe) = pipe {
+        rt().block_on(pipe.resume())
+            .map_err(|e| AppError::InvalidState(format!("resume pipeline failed: {e}")))?;
         if let Some(mut st) = session_bus::read_state() {
             st.status = "running".to_string();
             st.last_heartbeat_unix_ms = session_bus::now_unix_ms();
@@ -310,178 +319,177 @@ pub async fn resume_session(
         }
     } else {
         let _ = session_bus::write_control("resume", None, None);
-        return Ok(());
     }
-    
     Ok(())
 }
 
-/// Get current session status
-#[tauri::command]
-pub async fn get_session_status(
-    state: State<'_, SyncMutex<Option<Arc<RealtimePipeline>>>>,
-) -> Result<SessionStatusInfo, String> {
-    let pipeline = state.lock().clone();
-    
-    match pipeline {
-        Some(pipeline) => {
-            let state = pipeline.get_state().await;
-            let mut source_lang = "unknown".to_string();
-            let mut target_lang = "unknown".to_string();
-            let mut bidirectional = false;
-            if let Some(st) = session_bus::read_state() {
-                source_lang = st.source_lang;
-                target_lang = st.target_lang;
-                bidirectional = st.bidirectional;
-            }
-            if let Some(mut st) = session_bus::read_state() {
-                st.last_heartbeat_unix_ms = session_bus::now_unix_ms();
-                st.status = state.to_string().to_ascii_lowercase();
-                let _ = session_bus::write_state(&st);
-            }
-            Ok(SessionStatusInfo {
-                is_running: state == PipelineState::Running,
-                status: state.to_string(),
-                source_lang,
-                target_lang,
-                bidirectional,
-            })
-        }
-        None => {
-            if let Some(st) = session_bus::read_state() {
-                if session_bus::is_session_alive(&st) {
-                    return Ok(SessionStatusInfo {
-                        is_running: st.status == "running" || st.status == "paused",
-                        status: st.status,
-                        source_lang: st.source_lang,
-                        target_lang: st.target_lang,
-                        bidirectional: st.bidirectional,
-                    });
-                }
-            }
-            Ok(SessionStatusInfo {
-                is_running: false,
-                status: "Idle".to_string(),
-                source_lang: String::new(),
-                target_lang: String::new(),
-                bidirectional: false,
-            })
-        }
-    }
-}
-
-/// Get session statistics
-#[tauri::command]
-pub async fn get_session_stats(
-    state: State<'_, SyncMutex<Option<Arc<RealtimePipeline>>>>,
-) -> Result<SessionStats, String> {
-    let pipeline = state.lock().clone();
-    
-    match pipeline {
-        Some(pipeline) => {
-            let stats = pipeline.get_stats();
-            Ok(SessionStats::from(stats))
-        }
-        None => {
-            if let Some(m) = session_bus::read_metrics() {
-                let error_count = session_bus::read_state().map(|s| s.error_count).unwrap_or(0);
-                Ok(SessionStats {
-                    total_audio_duration_ms: m.total_audio_duration_ms,
-                    speech_duration_ms: m.speech_duration_ms,
-                    transcription_count: m.transcription_count,
-                    translation_count: m.translation_count,
-                    average_latency_ms: m.average_latency_ms,
-                    asr_average_latency_ms: m.asr_average_latency_ms,
-                    translation_average_latency_ms: m.translation_average_latency_ms,
-                    tts_average_latency_ms: m.tts_average_latency_ms,
-                    error_count,
-                })
-            } else {
-                Ok(SessionStats::default())
-            }
-        }
-    }
-}
-
-/// Get session history
-#[tauri::command]
-pub async fn get_session_history(
-    count: Option<usize>,
-    state: State<'_, SyncMutex<Option<Arc<RealtimePipeline>>>>,
-) -> Result<Vec<HistoryItemInfo>, String> {
-    let pipeline = state.lock().clone();
-    let count = count.unwrap_or(50);
-    
-    match pipeline {
-        Some(pipeline) => {
-            let items = pipeline.get_recent_history(count).await;
-            Ok(items.into_iter().map(HistoryItemInfo::from).collect())
-        }
-        None => {
-            let items = session_bus::read_history_recent(count)
-                .map_err(|e| format!("Failed to read session history bus: {}", e))?;
-            Ok(items
-                .into_iter()
-                .map(|i| HistoryItemInfo {
-                    id: i.id,
-                    source_text: i.source_text,
-                    translated_text: i.translated_text,
-                    source_lang: i.source_lang,
-                    target_lang: i.target_lang,
-                    timestamp: i.timestamp,
-                    confidence: i.confidence,
-                    loci_enhanced: false,
-                })
-                .collect())
-        }
-    }
-}
-
-/// Clear session history
-#[tauri::command]
-pub async fn clear_session_history(
-    state: State<'_, SyncMutex<Option<Arc<RealtimePipeline>>>>,
-) -> Result<(), String> {
-    let pipeline = state.lock().clone();
-    
-    if let Some(pipeline) = pipeline {
-        pipeline.clear_history().await;
-    }
-    let _ = session_bus::clear_history();
-    let _ = session_bus::write_metrics(&session_bus::SessionMetrics::default());
-    
-    Ok(())
-}
-
-/// Export session history to JSON
-#[tauri::command]
-pub async fn export_history(
-    state: State<'_, SyncMutex<Option<Arc<RealtimePipeline>>>>,
-) -> Result<String, String> {
-    let pipeline = state.lock().clone();
-    
-    match pipeline {
-        Some(pipeline) => {
-            let items = pipeline.get_history().await;
-            serde_json::to_string_pretty(&items)
-                .map_err(|e| format!("Failed to export history: {}", e))
-        }
-        None => Ok("[]".to_string()),
-    }
-}
-
-/// Update session language pair
-#[tauri::command]
-pub async fn update_languages(
+pub fn start_session_cli(
     source_lang: String,
     target_lang: String,
-    state: State<'_, SyncMutex<Option<Arc<RealtimePipeline>>>>,
-) -> Result<(), String> {
-    let pipeline = state.lock().clone();
-    
-    if let Some(pipeline) = pipeline {
-        pipeline.set_source_lang(&source_lang).await
-            .map_err(|e| format!("Failed to update language: {}", e))?;
+    bidirectional: bool,
+) -> AppResult<SessionStatus> {
+    write_runtime_state("running", source_lang, target_lang, bidirectional);
+    Ok(SessionStatus {
+        state: "running".to_string(),
+        label: "实时转译中".to_string(),
+        is_running: true,
+    })
+}
+
+pub fn stop_session_cli() -> AppResult<SessionStatus> {
+    let _ = session_bus::write_control("stop", None, None);
+    write_runtime_state("idle", String::new(), String::new(), false);
+    Ok(SessionStatus {
+        state: "idle".to_string(),
+        label: "已停止".to_string(),
+        is_running: false,
+    })
+}
+
+pub fn pause_session_cli() -> AppResult<SessionStatus> {
+    let _ = session_bus::write_control("pause", None, None);
+    update_runtime_status("paused");
+    Ok(SessionStatus {
+        state: "paused".to_string(),
+        label: "已暂停".to_string(),
+        is_running: true,
+    })
+}
+
+pub fn resume_session_cli() -> AppResult<SessionStatus> {
+    let _ = session_bus::write_control("resume", None, None);
+    update_runtime_status("running");
+    Ok(SessionStatus {
+        state: "running".to_string(),
+        label: "实时转译中".to_string(),
+        is_running: true,
+    })
+}
+
+pub fn session_status_cli() -> AppResult<SessionStatus> {
+    let pipe = pipeline_state().lock().clone();
+    if let Some(pipe) = pipe {
+        apply_pending_control(pipe.clone());
+        let st = rt().block_on(pipe.get_state());
+        if matches!(st, PipelineState::Running | PipelineState::Paused | PipelineState::Initializing) {
+            update_runtime_status(match st {
+                PipelineState::Running => "running",
+                PipelineState::Paused => "paused",
+                PipelineState::Initializing => "starting",
+                _ => "running",
+            });
+        }
+        return Ok(to_status(st));
+    }
+    if let Some(st) = session_bus::read_state() {
+        if session_bus::is_session_alive(&st) {
+            return Ok(match st.status.as_str() {
+                "running" => SessionStatus {
+                    state: "running".to_string(),
+                    label: "实时转译中".to_string(),
+                    is_running: true,
+                },
+                "paused" => SessionStatus {
+                    state: "paused".to_string(),
+                    label: "已暂停".to_string(),
+                    is_running: true,
+                },
+                _ => SessionStatus {
+                    state: "idle".to_string(),
+                    label: "已停止".to_string(),
+                    is_running: false,
+                },
+            });
+        }
+    }
+    Ok(to_status(PipelineState::Idle))
+}
+
+#[tauri::command]
+pub fn get_session_status() -> AppResult<SessionStatus> {
+    session_status_cli()
+}
+
+#[tauri::command]
+pub fn get_session_stats() -> AppResult<SessionStats> {
+    let pipe = pipeline_state().lock().clone();
+    if let Some(pipe) = pipe {
+        return Ok(to_session_stats(pipe.get_stats()));
+    }
+    if let Some(m) = session_bus::read_metrics() {
+        return Ok(SessionStats {
+            total_audio_duration_ms: m.total_audio_duration_ms,
+            speech_duration_ms: m.speech_duration_ms,
+            transcription_count: m.transcription_count,
+            translation_count: m.translation_count,
+            average_latency_ms: m.average_latency_ms,
+            asr_average_latency_ms: m.asr_average_latency_ms,
+            translation_average_latency_ms: m.translation_average_latency_ms,
+            tts_average_latency_ms: m.tts_average_latency_ms,
+            timestamp: chrono_like_timestamp(),
+        });
+    }
+    Ok(SessionStats {
+        total_audio_duration_ms: 0,
+        speech_duration_ms: 0,
+        transcription_count: 0,
+        translation_count: 0,
+        average_latency_ms: 0.0,
+        asr_average_latency_ms: 0.0,
+        translation_average_latency_ms: 0.0,
+        tts_average_latency_ms: 0.0,
+        timestamp: chrono_like_timestamp(),
+    })
+}
+
+pub fn get_session_history_cli(count: Option<usize>) -> AppResult<Vec<SessionHistoryItem>> {
+    let count = count.unwrap_or(20);
+    let pipe = pipeline_state().lock().clone();
+    if let Some(pipe) = pipe {
+        let items = rt().block_on(pipe.get_recent_history(count));
+        return Ok(items.into_iter().map(map_history_item).collect());
+    }
+    let items = session_bus::read_history_recent(count)
+        .map_err(|e| AppError::InvalidState(format!("read history failed: {e}")))?;
+    Ok(items
+        .into_iter()
+        .map(|h| SessionHistoryItem {
+            id: h.id,
+            source_text: h.source_text,
+            translated_text: h.translated_text,
+            source_lang: h.source_lang,
+            target_lang: h.target_lang,
+            timestamp: h.timestamp,
+            confidence: h.confidence,
+        })
+        .collect())
+}
+
+pub fn clear_session_history_cli() -> AppResult<()> {
+    if let Some(pipe) = pipeline_state().lock().clone() {
+        rt().block_on(pipe.clear_history());
+    }
+    session_bus::clear_history()
+        .map_err(|e| AppError::InvalidState(format!("clear history failed: {e}")))?;
+    session_bus::write_metrics(&session_bus::SessionMetrics::default())
+        .map_err(|e| AppError::InvalidState(format!("clear metrics failed: {e}")))?;
+    Ok(())
+}
+
+pub fn export_history_cli(output: Option<String>) -> AppResult<String> {
+    let items = get_session_history_cli(Some(100_000))?;
+    let json = serde_json::to_string_pretty(&items).map_err(|e| AppError::Io(e.to_string()))?;
+    let out = output
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_default().join("session-history-export.json"));
+    std::fs::write(&out, json)?;
+    Ok(out.display().to_string())
+}
+
+pub fn update_languages_cli(source_lang: String, target_lang: String) -> AppResult<SessionStatus> {
+    if let Some(pipe) = pipeline_state().lock().clone() {
+        rt().block_on(pipe.set_source_lang(&source_lang))
+            .map_err(|e| AppError::InvalidState(format!("update language failed: {e}")))?;
     }
     let _ = session_bus::write_control("update_languages", Some(&source_lang), Some(&target_lang));
     if let Some(mut st) = session_bus::read_state() {
@@ -490,51 +498,54 @@ pub async fn update_languages(
         st.last_heartbeat_unix_ms = session_bus::now_unix_ms();
         let _ = session_bus::write_state(&st);
     }
-    
-    Ok(())
+    session_status_cli()
 }
 
-impl Default for SessionStats {
-    fn default() -> Self {
-        Self {
-            total_audio_duration_ms: 0,
-            speech_duration_ms: 0,
-            transcription_count: 0,
-            translation_count: 0,
-            average_latency_ms: 0.0,
-            asr_average_latency_ms: 0.0,
-            translation_average_latency_ms: 0.0,
-            tts_average_latency_ms: 0.0,
-            error_count: 0,
-        }
+#[tauri::command(rename_all = "snake_case")]
+pub fn update_languages(source_lang: String, target_lang: String) -> AppResult<SessionStatus> {
+    update_languages_cli(source_lang, target_lang)
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub fn get_session_history(count: Option<usize>) -> AppResult<Vec<SessionHistoryItem>> {
+    get_session_history_cli(count)
+}
+
+#[tauri::command]
+pub fn clear_session_history() -> AppResult<()> {
+    clear_session_history_cli()
+}
+
+#[tauri::command]
+pub fn export_history(output: Option<String>) -> AppResult<String> {
+    export_history_cli(output)
+}
+
+pub(crate) fn note_translation() {
+    if let Some(mut metrics) = session_bus::read_metrics() {
+        metrics.translation_count = metrics.translation_count.saturating_add(1);
+        metrics.last_updated_unix_ms = session_bus::now_unix_ms();
+        let _ = session_bus::write_metrics(&metrics);
+    } else {
+        let mut metrics = session_bus::SessionMetrics::default();
+        metrics.translation_count = 1;
+        let _ = session_bus::write_metrics(&metrics);
     }
+}
+
+fn chrono_like_timestamp() -> String {
+    let now = std::time::SystemTime::now();
+    let secs = now
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    format!("{secs}")
 }
 
 fn is_english_only_asr_model() -> bool {
     let Some(asr_dir) = resolve_asr_model_dir() else {
         return false;
     };
-
-    let base = asr_dir.parent().map(|p| p.to_path_buf());
-    if let Some(base) = base {
-        if let Ok(entries) = std::fs::read_dir(base) {
-            for entry in entries.flatten() {
-                let p = entry.path();
-                if !p.is_dir() || !(has_required_asr_files(&p) || has_paraformer_files(&p)) {
-                    continue;
-                }
-                let n = p.to_string_lossy().to_ascii_lowercase();
-                if n.contains("zh")
-                    || n.contains("multi")
-                    || n.contains("trilingual")
-                    || p.join("model.int8.onnx").exists()
-                    || p.join("model.onnx").exists()
-                {
-                    return false;
-                }
-            }
-        }
-    }
 
     let dir_name = asr_dir
         .file_name()
@@ -546,30 +557,24 @@ fn is_english_only_asr_model() -> bool {
         return true;
     }
 
-    let has_en_marked_model = std::fs::read_dir(&asr_dir)
+    std::fs::read_dir(&asr_dir)
         .ok()
         .map(|entries| {
             entries.flatten().any(|entry| {
-                let name = entry
-                    .file_name()
-                    .to_string_lossy()
-                    .to_ascii_lowercase();
+                let name = entry.file_name().to_string_lossy().to_ascii_lowercase();
                 name.contains("-en-") || name.contains(".en.") || name.contains("_en_")
             })
         })
-        .unwrap_or(false);
-
-    has_en_marked_model
+        .unwrap_or(false)
 }
 
-fn resolve_asr_model_dir() -> Option<PathBuf> {
+fn resolve_asr_model_dir() -> Option<std::path::PathBuf> {
     let base = dirs::data_local_dir()?.join("LocalTrans").join("models").join("asr");
     if has_required_asr_files(&base) {
         return Some(base);
     }
-
     let entries = std::fs::read_dir(&base).ok()?;
-    let mut best: Option<(u64, PathBuf)> = None;
+    let mut best: Option<(u64, std::path::PathBuf)> = None;
     for entry in entries.flatten() {
         let path = entry.path();
         if !path.is_dir() || !has_required_asr_files(&path) {
@@ -581,7 +586,6 @@ fn resolve_asr_model_dir() -> Option<PathBuf> {
             _ => best = Some((size, path)),
         }
     }
-
     best.map(|(_, p)| p)
 }
 
@@ -590,11 +594,6 @@ fn has_required_asr_files(dir: &Path) -> bool {
         && has_prefix_onnx(dir, "encoder")
         && has_prefix_onnx(dir, "decoder")
         && has_prefix_onnx(dir, "joiner")
-}
-
-fn has_paraformer_files(dir: &Path) -> bool {
-    dir.join("tokens.txt").exists()
-        && (dir.join("model.int8.onnx").exists() || dir.join("model.onnx").exists())
 }
 
 fn has_prefix_onnx(dir: &Path, prefix: &str) -> bool {

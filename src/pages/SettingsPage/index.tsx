@@ -110,6 +110,7 @@ function SettingsPage() {
   const [outputDevices, setOutputDevices] = useState<AudioDevice[]>([]);
   const [virtualDriverCheck, setVirtualDriverCheck] = useState<VirtualDriverCheckResult | null>(null);
   const [checkingDriver, setCheckingDriver] = useState(true);
+  const [configSyncReady, setConfigSyncReady] = useState(false);
 
   useEffect(() => {
     // Check virtual audio driver
@@ -129,6 +130,86 @@ function SettingsPage() {
       .then((devices) => setOutputDevices(devices))
       .catch((err) => console.error("Failed to load devices:", err));
   }, []);
+
+  // Load backend-shared config on page mount so CLI/GUI can share the same settings source.
+  useEffect(() => {
+    let cancelled = false;
+    invoke<Record<string, unknown>>("get_app_config")
+      .then((cfg) => {
+        if (cancelled || !cfg) return;
+        if (typeof cfg.sampleRate === "number") setSampleRate(cfg.sampleRate);
+        if (typeof cfg.asrEngine === "string") setAsrEngine(cfg.asrEngine as typeof asrEngine);
+        if (typeof cfg.asrModelSize === "string") setAsrModelSize(cfg.asrModelSize as typeof asrModelSize);
+        if (typeof cfg.asrLanguage === "string") setAsrLanguage(cfg.asrLanguage);
+        if (typeof cfg.vadEnabled === "boolean") setVadEnabled(cfg.vadEnabled);
+        if (typeof cfg.chunkSize === "number") setChunkSize(cfg.chunkSize);
+        if (typeof cfg.gpuAcceleration === "boolean") setGpuAcceleration(cfg.gpuAcceleration);
+        if (typeof cfg.ttsEnabled === "boolean") setTtsEnabled(cfg.ttsEnabled);
+        if (typeof cfg.ttsEngine === "string") setTtsEngine(cfg.ttsEngine as typeof ttsEngine);
+        if (typeof cfg.ttsVoice === "string") setTtsVoice(cfg.ttsVoice);
+        if (typeof cfg.ttsRate === "number") setTtsRate(cfg.ttsRate);
+        if (typeof cfg.ttsVolume === "number") setTtsVolume(cfg.ttsVolume);
+        if (typeof cfg.ttsAutoPlay === "boolean") setTtsAutoPlay(cfg.ttsAutoPlay);
+        if (typeof cfg.ttsOutputDevice === "string" || cfg.ttsOutputDevice === null) {
+          setTtsOutputDevice((cfg.ttsOutputDevice as string | null) ?? null);
+        }
+      })
+      .catch(() => {})
+      .finally(() => {
+        if (!cancelled) setConfigSyncReady(true);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // Push current settings into backend-shared config for CLI <-> GUI sync.
+  useEffect(() => {
+    if (!configSyncReady) return;
+    const cfg = {
+      sampleRate,
+      asrEngine,
+      asrModelSize,
+      asrLanguage,
+      vadEnabled,
+      chunkSize,
+      gpuAcceleration,
+      ttsEnabled,
+      ttsEngine,
+      ttsVoice,
+      ttsRate,
+      ttsVolume,
+      ttsAutoPlay,
+      ttsOutputDevice,
+      customVoiceEnabled,
+      customVoiceModelPath,
+      customVoiceModelType,
+      customVoiceReferenceAudio,
+      customVoiceReferenceText,
+    };
+    invoke("set_app_config", { config: cfg }).catch(() => {});
+  }, [
+    configSyncReady,
+    sampleRate,
+    asrEngine,
+    asrModelSize,
+    asrLanguage,
+    vadEnabled,
+    chunkSize,
+    gpuAcceleration,
+    ttsEnabled,
+    ttsEngine,
+    ttsVoice,
+    ttsRate,
+    ttsVolume,
+    ttsAutoPlay,
+    ttsOutputDevice,
+    customVoiceEnabled,
+    customVoiceModelPath,
+    customVoiceModelType,
+    customVoiceReferenceAudio,
+    customVoiceReferenceText,
+  ]);
 
   const handlePreset = (preset: typeof presets[0]) => {
     setAsrModelSize(preset.settings.asrModelSize);

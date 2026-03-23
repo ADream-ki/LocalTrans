@@ -4,20 +4,19 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "node scripts/vite-safe.cjs",
-    "dev:vite": "vite",
-    "build": "tsc && node scripts/vite-safe.cjs build",
+    "dev": "vite",
+    "build": "tsc && vite build --base ./",
     "preview": "vite preview",
     "tauri": "tauri"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.1.5",
     "@tauri-apps/plugin-shell": "^2.0.3",
+    "clsx": "^2.1.1",
+    "lucide-react": "^0.468.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
-    "zustand": "^5.0.3",
-    "lucide-react": "^0.468.0",
-    "clsx": "^2.1.1"
+    "zustand": "^5.0.3"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.1.0",

@@ -83,6 +83,12 @@ interface PipelineStatsPayload {
   timestamp?: string;
 }
 
+interface SessionStatusPayload {
+  state: "idle" | "initializing" | "running" | "paused" | "stopping";
+  label: string;
+  is_running: boolean;
+}
+
 interface CustomVoiceRequest {
   modelType: string;
   modelPath: string;
@@ -535,6 +541,31 @@ function SessionPage() {
     };
   }, []);
 
+  // Cross-process sync: keep GUI status in sync when CLI changes session state.
+  useEffect(() => {
+    let stopped = false;
+
+    const syncStatus = async () => {
+      try {
+        const payload = await invoke<SessionStatusPayload>("get_session_status");
+        if (stopped) return;
+        useSessionStore.getState().setPipelineStatus(payload.state, null);
+      } catch {
+        // ignore polling errors
+      }
+    };
+
+    void syncStatus();
+    const id = window.setInterval(() => {
+      void syncStatus();
+    }, 900);
+
+    return () => {
+      stopped = true;
+      window.clearInterval(id);
+    };
+  }, []);
+
   // Stop TTS
   const stopSpeaking = useCallback(async () => {
     try {
@@ -549,6 +580,16 @@ function SessionPage() {
     const temp = sourceLang;
     setSourceLang(targetLang);
     setTargetLang(temp);
+  };
+
+  const handlePresetZhToEn = () => {
+    setSourceLang("zh");
+    setTargetLang("en");
+  };
+
+  const handlePresetEnToZh = () => {
+    setSourceLang("en");
+    setTargetLang("zh");
   };
 
   const handlePlayTranslation = () => {
@@ -874,6 +915,24 @@ function SessionPage() {
                 </option>
               ))}
             </select>
+          </div>
+          <div className="mt-s flex items-center gap-s">
+            <button
+              type="button"
+              onClick={handlePresetZhToEn}
+              disabled={isRunning}
+              className="px-s py-xs rounded-medium border border-bg-tertiary bg-bg-secondary text-xs text-text-secondary hover:bg-bg-tertiary disabled:opacity-60 disabled:cursor-not-allowed transition-colors duration-fast"
+            >
+              中译英
+            </button>
+            <button
+              type="button"
+              onClick={handlePresetEnToZh}
+              disabled={isRunning}
+              className="px-s py-xs rounded-medium border border-bg-tertiary bg-bg-secondary text-xs text-text-secondary hover:bg-bg-tertiary disabled:opacity-60 disabled:cursor-not-allowed transition-colors duration-fast"
+            >
+              英译中
+            </button>
           </div>
 
           <div className="mt-m flex items-center gap-s">

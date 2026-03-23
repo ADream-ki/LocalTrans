@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import GlassCard from "../../components/GlassCard";
 import { useUiStore } from "../../stores/uiStore";
 import {
@@ -34,6 +35,13 @@ interface Model {
   status: "ready" | "downloading" | "error" | "not_downloaded";
   path?: string;
   downloadUrl?: string;
+}
+
+interface ModelDownloadProgressEvent {
+  modelId: string;
+  modelType: string;
+  progress: number;
+  status: string;
 }
 
 type GuideStatus = "ready" | "partial" | "missing" | "checking";
@@ -96,6 +104,7 @@ function ModelPage() {
   const [error, setError] = useState<string | null>(null);
   const [guideState, setGuideState] = useState<GuideState>(defaultGuideState);
   const [guideLoading, setGuideLoading] = useState(false);
+  const [downloadProgress, setDownloadProgress] = useState<Record<string, number>>({});
 
   const filteredModels = useMemo(
     () => models.filter((m) => m.type === activeTab),
@@ -146,6 +155,34 @@ function ModelPage() {
     loadModels(activeTab);
   }, [activeTab, loadModels]);
 
+  useEffect(() => {
+    let unlisten: (() => void) | null = null;
+
+    void listen<ModelDownloadProgressEvent>("model-download-progress", (event) => {
+      const payload = event.payload;
+      setDownloadProgress((prev) => ({
+        ...prev,
+        [payload.modelId]: payload.progress,
+      }));
+      setModels((prev) =>
+        prev.map((m) =>
+          m.id === payload.modelId
+            ? {
+                ...m,
+                status: payload.status === "completed" ? "ready" : "downloading",
+              }
+            : m
+        )
+      );
+    }).then((off) => {
+      unlisten = off;
+    });
+
+    return () => {
+      if (unlisten) unlisten();
+    };
+  }, []);
+
   const handleRefresh = () => {
     loadModels(activeTab);
   };
@@ -172,6 +209,7 @@ function ModelPage() {
     setModels((prev) =>
       prev.map((m) => (m.id === model.id ? { ...m, status: "downloading" } : m))
     );
+    setDownloadProgress((prev) => ({ ...prev, [model.id]: 1 }));
 
     try {
       await invoke<string>("download_model", {
@@ -179,10 +217,20 @@ function ModelPage() {
         model_type: model.type,
       });
       await loadModels(activeTab);
+      setDownloadProgress((prev) => {
+        const next = { ...prev };
+        delete next[model.id];
+        return next;
+      });
     } catch (e) {
       setModels((prev) =>
         prev.map((m) => (m.id === model.id ? { ...m, status: "error" } : m))
       );
+      setDownloadProgress((prev) => {
+        const next = { ...prev };
+        delete next[model.id];
+        return next;
+      });
       setError(e instanceof Error ? e.message : String(e));
     }
   };
@@ -298,7 +346,7 @@ function ModelPage() {
         return (
           <span className="px-s py-xs bg-warning/10 text-warning text-xs font-medium rounded-small flex items-center gap-xs">
             <Clock size={12} />
-            下载中
+            下载中 {downloadProgress[model.id] ?? 0}%
           </span>
         );
       case "error":
@@ -499,6 +547,14 @@ function ModelPage() {
                 <div>
                   <div className="font-medium text-text-primary">{model.name}</div>
                   <div className="text-xs text-text-secondary">{model.size}</div>
+                  {model.status === "downloading" && (
+                    <div className="mt-xs w-52 h-1.5 bg-bg-tertiary rounded-full overflow-hidden">
+                      <div
+                        className="h-full bg-warning transition-all duration-fast"
+                        style={{ width: `${downloadProgress[model.id] ?? 0}%` }}
+                      />
+                    </div>
+                  )}
                 </div>
               </div>
 

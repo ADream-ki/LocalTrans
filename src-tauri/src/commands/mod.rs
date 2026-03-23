@@ -1,5 +1,11 @@
 pub mod audio;
-pub mod session;
+pub mod config;
+pub mod hello;
 pub mod model;
-pub mod tts;
+pub mod process_file;
+pub mod router;
+pub mod session;
+pub mod system;
 pub mod translation;
+pub mod tts;
+pub mod version;

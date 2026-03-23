@@ -193,7 +193,18 @@ pub fn now_unix_ms() -> u64 {
 }
 
 pub fn is_session_alive(state: &SessionRuntimeState) -> bool {
+    let active_state =
+        state.status == "starting" || state.status == "running" || state.status == "paused";
+    if !active_state {
+        return false;
+    }
+
+    if state.pid == std::process::id() {
+        return true;
+    }
+
     let now = now_unix_ms();
-    now.saturating_sub(state.last_heartbeat_unix_ms) <= 5_000
-        && (state.status == "starting" || state.status == "running" || state.status == "paused")
+    // Cross-process state is file-based; use a loose TTL so short-lived CLI wrappers
+    // don't cause immediate status fallback in GUI polling.
+    now.saturating_sub(state.last_heartbeat_unix_ms) <= 86_400_000
 }
