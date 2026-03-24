@@ -14,8 +14,10 @@
     "windows": [
       {
         "title": "localtrans",
-        "width": 800,
-        "height": 600
+        "width": 1320,
+        "height": 840,
+        "resizable": true,
+        "decorations": false
       }
     ],
     "security": {
@@ -25,6 +27,9 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "resources": [
+      "resources/mt-runtime"
+    ],
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

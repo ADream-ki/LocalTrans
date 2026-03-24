@@ -50,7 +50,7 @@ whisper-rs = { version = "0.11", optional = true }
 loci = { path = "../../Loci", optional = true }
 
 [features]
-default = ["custom-protocol", "sherpa-backend", "loci-backend"]
+default = ["custom-protocol", "sherpa-backend"]
 custom-protocol = ["tauri/custom-protocol"]
 sherpa-backend = ["sherpa-rs"]
 loci-backend = ["loci"]

@@ -4,12 +4,12 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 use super::{Translator, TranslationResult};
 
-/// Deterministic 1:1 MT backend powered by Argos Translate (no LLM inference).
+/// Deterministic 1:1 MT backend (no LLM inference), powered by CTranslate2 + SentencePiece.
 ///
-/// Runtime requirements:
-/// - Python available (or set `LOCALTRANS_MT_PYTHON`)
-/// - `argostranslate` installed in that Python environment
-/// - Language package installed for the requested pair (e.g. zh->en, en->zh)
+/// Runtime resolution order:
+/// - Bundled runtime under `resources/mt-runtime` (portable/release first choice)
+/// - Explicit Python from `LOCALTRANS_MT_PYTHON`
+/// - Conda fallback (`LOCALTRANS_MT_CONDA_ENV` or `localtrans`)
 pub struct NllbTranslator {
     model_path: Option<String>,
     python_exe: String,
@@ -31,11 +31,19 @@ impl NllbTranslator {
     }
 
     fn run_argos_translate(&self, text: &str, source_lang: &str, target_lang: &str) -> Result<String> {
-        let script = "import sys;from argostranslate import translate;text,src,dst=sys.argv[1],sys.argv[2],sys.argv[3];print(translate.translate(text,src,dst),end='')";
+        let inline_script = "import os,sys,json,pathlib,ctranslate2,sentencepiece as spm;text,src,dst=sys.argv[1],sys.argv[2],sys.argv[3];root=os.environ.get('ARGOS_PACKAGES_DIR') or str(pathlib.Path.home()/'.local/share/argos-translate/packages');rp=pathlib.Path(root);pkg=None\nfor d in rp.iterdir() if rp.exists() else []:\n m=d/'metadata.json'\n if m.exists():\n  md=json.loads(m.read_text(encoding='utf-8'))\n  if md.get('from_code')==src and md.get('to_code')==dst:\n   pkg=d;break\nif pkg is None: raise RuntimeError(f'No Argos package for {src}->{dst} under {root}');sp=spm.SentencePieceProcessor(model_file=str(pkg/'sentencepiece.model'));tr=ctranslate2.Translator(str(pkg/'model'),device='cpu');pieces=sp.encode(text,out_type=str);res=tr.translate_batch([pieces],beam_size=1,max_decoding_length=256,no_repeat_ngram_size=3);out=''.join(res[0].hypotheses[0]).replace('▁',' ').strip();print(out,end='')";
+        let bundled_script = resolve_bundled_mt_script();
         let run_direct = || -> Result<std::process::Output> {
-            Command::new(&self.python_exe)
-                .arg("-c")
-                .arg(script)
+            let mut cmd = Command::new(&self.python_exe);
+            if let Some(argos_dir) = resolve_bundled_argos_packages() {
+                cmd.env("ARGOS_PACKAGES_DIR", argos_dir);
+            }
+            if let Some(script_path) = bundled_script.as_ref() {
+                cmd.arg(script_path);
+            } else {
+                cmd.arg("-c").arg(inline_script);
+            }
+            cmd
                 .arg(text)
                 .arg(source_lang)
                 .arg(target_lang)
@@ -57,14 +65,22 @@ impl NllbTranslator {
                 .conda_exe
                 .as_ref()
                 .ok_or_else(|| anyhow::anyhow!("conda executable not found"))?;
-            Command::new(conda)
+            let mut cmd = Command::new(conda);
+            if let Some(argos_dir) = resolve_bundled_argos_packages() {
+                cmd.env("ARGOS_PACKAGES_DIR", argos_dir);
+            }
+            cmd
                 .arg("run")
                 .arg("--no-capture-output")
                 .arg("-n")
                 .arg(&self.conda_env_name)
-                .arg("python")
-                .arg("-c")
-                .arg(script)
+                .arg("python");
+            if let Some(script_path) = bundled_script.as_ref() {
+                cmd.arg(script_path);
+            } else {
+                cmd.arg("-c").arg(inline_script);
+            }
+            cmd
                 .arg(text)
                 .arg(source_lang)
                 .arg(target_lang)
@@ -152,6 +168,9 @@ impl Default for NllbTranslator {
 }
 
 fn resolve_python_exe() -> String {
+    if let Some(p) = resolve_bundled_python() {
+        return p;
+    }
     if let Ok(p) = std::env::var("LOCALTRANS_MT_PYTHON") {
         let v = p.trim();
         if !v.is_empty() {
@@ -175,6 +194,54 @@ fn resolve_python_exe() -> String {
         }
     }
     "python".to_string()
+}
+
+fn resolve_bundled_python() -> Option<String> {
+    let exe = std::env::current_exe().ok()?;
+    let exe_dir = exe.parent()?;
+
+    let candidates = [
+        exe_dir.join("resources").join("mt-runtime").join("python").join("python.exe"),
+        exe_dir.join("mt-runtime").join("python").join("python.exe"),
+        exe_dir.join("python").join("python.exe"),
+    ];
+
+    for p in candidates {
+        if p.exists() {
+            return Some(p.display().to_string());
+        }
+    }
+    None
+}
+
+fn resolve_bundled_argos_packages() -> Option<String> {
+    let exe = std::env::current_exe().ok()?;
+    let exe_dir = exe.parent()?;
+    let candidates = [
+        exe_dir.join("resources").join("mt-runtime").join("argos-packages"),
+        exe_dir.join("mt-runtime").join("argos-packages"),
+    ];
+    for p in candidates {
+        if p.exists() {
+            return Some(p.display().to_string());
+        }
+    }
+    None
+}
+
+fn resolve_bundled_mt_script() -> Option<String> {
+    let exe = std::env::current_exe().ok()?;
+    let exe_dir = exe.parent()?;
+    let candidates = [
+        exe_dir.join("resources").join("mt-runtime").join("mt_translate.py"),
+        exe_dir.join("mt-runtime").join("mt_translate.py"),
+    ];
+    for p in candidates {
+        if p.exists() {
+            return Some(p.display().to_string());
+        }
+    }
+    None
 }
 
 fn resolve_conda_exe() -> Option<String> {

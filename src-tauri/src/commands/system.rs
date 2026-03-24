@@ -1,6 +1,7 @@
 use serde::Serialize;
+use serde_json::Value;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::error::AppResult;
 
@@ -28,6 +29,18 @@ pub struct LogStatus {
     pub log_dir: String,
     pub latest_log: Option<String>,
     pub exists: bool,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MtRuntimeCheck {
+    pub bundled_python: Option<String>,
+    pub bundled_script: Option<String>,
+    pub bundled_argos_packages: Option<String>,
+    pub package_count: usize,
+    pub language_pairs: Vec<String>,
+    pub ready: bool,
+    pub message: String,
 }
 
 #[tauri::command]
@@ -141,4 +154,119 @@ pub fn get_log_status() -> AppResult<LogStatus> {
         latest_log: latest.map(|(_, p)| p.display().to_string()),
         exists: log_dir.exists(),
     })
+}
+
+#[tauri::command]
+pub fn check_mt_runtime() -> AppResult<MtRuntimeCheck> {
+    let bundled_python = resolve_bundled_python();
+    let bundled_script = resolve_bundled_mt_script();
+    let bundled_argos_packages = resolve_bundled_argos_packages();
+    let (package_count, language_pairs) = match bundled_argos_packages.as_deref() {
+        Some(path) => scan_argos_packages(Path::new(path)),
+        None => (0, Vec::new()),
+    };
+    let ready = bundled_python.is_some()
+        && bundled_script.is_some()
+        && bundled_argos_packages.is_some()
+        && package_count > 0;
+
+    let message = if ready {
+        format!("Bundled MT runtime ready ({} packages).", package_count)
+    } else {
+        "Bundled MT runtime incomplete. Run tools/prepare_mt_runtime.ps1 before packaging."
+            .to_string()
+    };
+
+    Ok(MtRuntimeCheck {
+        bundled_python,
+        bundled_script,
+        bundled_argos_packages,
+        package_count,
+        language_pairs,
+        ready,
+        message,
+    })
+}
+
+fn resolve_bundled_python() -> Option<String> {
+    let exe = std::env::current_exe().ok()?;
+    let exe_dir = exe.parent()?;
+    let candidates = [
+        exe_dir
+            .join("resources")
+            .join("mt-runtime")
+            .join("python")
+            .join("python.exe"),
+        exe_dir.join("mt-runtime").join("python").join("python.exe"),
+        exe_dir.join("python").join("python.exe"),
+    ];
+    candidates
+        .iter()
+        .find(|p| p.exists())
+        .map(|p| path_to_string(p.as_path()))
+}
+
+fn resolve_bundled_argos_packages() -> Option<String> {
+    let exe = std::env::current_exe().ok()?;
+    let exe_dir = exe.parent()?;
+    let candidates = [
+        exe_dir.join("resources").join("mt-runtime").join("argos-packages"),
+        exe_dir.join("mt-runtime").join("argos-packages"),
+    ];
+    candidates
+        .iter()
+        .find(|p| p.exists())
+        .map(|p| path_to_string(p.as_path()))
+}
+
+fn resolve_bundled_mt_script() -> Option<String> {
+    let exe = std::env::current_exe().ok()?;
+    let exe_dir = exe.parent()?;
+    let candidates = [
+        exe_dir
+            .join("resources")
+            .join("mt-runtime")
+            .join("mt_translate.py"),
+        exe_dir.join("mt-runtime").join("mt_translate.py"),
+    ];
+    candidates
+        .iter()
+        .find(|p| p.exists())
+        .map(|p| path_to_string(p.as_path()))
+}
+
+fn scan_argos_packages(root: &Path) -> (usize, Vec<String>) {
+    let mut count = 0usize;
+    let mut pairs = Vec::new();
+    let entries = match fs::read_dir(root) {
+        Ok(v) => v,
+        Err(_) => return (0, pairs),
+    };
+    for entry in entries.flatten() {
+        let meta = entry.path().join("metadata.json");
+        if !meta.exists() {
+            continue;
+        }
+        let text = match fs::read_to_string(&meta) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        let json: Value = match serde_json::from_str(&text) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        let from = json.get("from_code").and_then(Value::as_str).unwrap_or("");
+        let to = json.get("to_code").and_then(Value::as_str).unwrap_or("");
+        if !from.is_empty() && !to.is_empty() {
+            pairs.push(format!("{from}->{to}"));
+        }
+        count += 1;
+    }
+    pairs.sort();
+    pairs.dedup();
+    (count, pairs)
+}
+
+fn path_to_string(path: &Path) -> String {
+    path.display().to_string()
 }

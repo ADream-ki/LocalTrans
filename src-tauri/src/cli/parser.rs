@@ -79,6 +79,7 @@ pub enum Commands {
         target_lang: String,
     },
     LogStatus,
+    MtRuntimeCheck,
     TtsVoices {
         #[arg(long)]
         language: Option<String>,

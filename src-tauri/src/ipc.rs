@@ -60,6 +60,7 @@ pub enum IpcCommand {
         target_lang: String,
     },
     LogStatus,
+    MtRuntimeCheck,
     TtsVoices {
         language: Option<String>,
     },
@@ -274,6 +275,7 @@ fn execute(command: IpcCommand, app: AppHandle) -> AppResult<Value> {
             },
         )),
         IpcCommand::LogStatus => to_json(commands::system::get_log_status()),
+        IpcCommand::MtRuntimeCheck => to_json(commands::system::check_mt_runtime()),
         IpcCommand::TtsVoices { language } => to_json(commands::tts::get_tts_voices(language)),
         IpcCommand::TtsConfig => to_json(commands::tts::get_tts_config()),
         IpcCommand::TtsDefaultVoice { language } => {

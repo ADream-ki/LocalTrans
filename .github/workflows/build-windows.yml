@@ -28,6 +28,11 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
       - name: Cache cargo registry
         uses: actions/cache@v4
         with:
@@ -54,6 +59,35 @@ jobs:
 
       - name: Install frontend dependencies
         run: npm ci
+
+      - name: Prepare bundled MT runtime
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install ctranslate2 sentencepiece numpy pyyaml setuptools argostranslate
+          @'
+          import argostranslate.package
+          import argostranslate.translate
+
+          argostranslate.package.update_package_index()
+          available = argostranslate.package.get_available_packages()
+
+          required_pairs = {("zh", "en"), ("en", "zh")}
+          installed = set()
+          for pkg in available:
+              pair = (pkg.from_code, pkg.to_code)
+              if pair in required_pairs and pair not in installed:
+                  path = pkg.download()
+                  argostranslate.package.install_from_path(path)
+                  installed.add(pair)
+
+          missing = required_pairs - installed
+          if missing:
+              raise RuntimeError(f"Missing Argos packages: {missing}")
+          print("Installed Argos packages:", sorted(installed))
+          '@ | python -
+          $py = (Get-Command python).Source
+          powershell -ExecutionPolicy Bypass -File .\tools\prepare_mt_runtime.ps1 -SourcePython $py -RepoRoot $env:GITHUB_WORKSPACE
 
       - name: Build Tauri release
         run: npm run tauri build

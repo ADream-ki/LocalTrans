@@ -1,45 +1,92 @@
-# LocalTrans
+﻿# LocalTrans
 
-LocalTrans is a Tauri v2 desktop app with a unified GUI + CLI runtime.
-This repository is the refactored codebase (migrated from `LocalTrans-old`).
+LocalTrans is a **real-time desktop speech translation product** for Windows.
+It provides one runtime with two interfaces:
+- GUI for daily operation
+- CLI for automation and integration
 
+This repository is the refactored codebase migrated from `LocalTrans-old`.
 Chinese doc: [README_CN.md](./README_CN.md)
 
-## Repository Structure
+## Product Positioning
 
-- `src/`: frontend (React + Vite)
-- `src-tauri/`: backend/runtime (Rust + Tauri)
-- `src-tauri/src/commands/`: shared command layer for GUI invoke and CLI
-- `src-tauri/src/cli/parser.rs`: CLI command definitions
-- `.github/workflows/build-windows.yml`: CI build workflow
+LocalTrans focuses on local-first realtime workflow:
+- realtime ASR -> machine translation -> TTS playback
+- GUI and CLI sharing the same command/runtime layer
+- cross-process state sync (CLI can drive running GUI session)
+- portable release (`localtrans.exe`) for direct distribution
 
-## Local Prerequisites (Windows)
+## Architecture (Refactor)
+
+- `src/`: React + Vite frontend
+- `src-tauri/`: Rust + Tauri runtime
+- `src-tauri/src/commands/`: shared command layer (GUI invoke + CLI + IPC)
+- `src-tauri/src/ipc.rs`: GUI/CLI cross-process command bridge
+- `tools/prepare_mt_runtime.ps1`: prepare bundled MT runtime
+- `.github/workflows/build-windows.yml`: Windows CI build
+
+## Build Prerequisites (Windows)
 
 - Node.js 20+
 - Rust stable
-- A valid `libclang.dll` path for real ASR build
+- LLVM / `libclang.dll` (for ASR-related build path)
 
-Recommended (conda):
-
-```powershell
-D:\miniconda3\Scripts\conda.exe run -n localtrans python -m pip install -U libclang
-```
-
-Then set:
+Example:
 
 ```powershell
-$env:LIBCLANG_PATH="C:\Users\<you>\.conda\envs\localtrans\Lib\site-packages\clang\native"
+$env:LIBCLANG_PATH="C:\Program Files\LLVM\bin"
 ```
 
-## Run & Build
+## Bundled MT Runtime (No user Python required)
+
+`translate-text` and realtime MT can run with bundled runtime in release package:
+
+- bundled Python runtime
+- bundled `mt_translate.py`
+- bundled Argos language packages (CT2 model format)
+
+Runtime search order in app:
+1. `resources/mt-runtime` next to executable (preferred)
+2. `LOCALTRANS_MT_PYTHON`
+3. conda fallback (`LOCALTRANS_MT_CONDA_ENV`, default `localtrans`)
+
+### Prepare bundled MT runtime
+
+Run before release packaging:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\tools\prepare_mt_runtime.ps1
+```
+
+Optional custom Python source:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\tools\prepare_mt_runtime.ps1 -SourcePython "D:\miniconda3\envs\localtrans\python.exe"
+```
+
+The script generates:
+- `src-tauri/resources/mt-runtime/python`
+- `src-tauri/resources/mt-runtime/argos-packages`
+- `src-tauri/resources/mt-runtime/mt_translate.py`
+
+## Run and Package
+
+Install dependencies:
 
 ```powershell
 npm ci
+```
+
+Dev mode:
+
+```powershell
 npm run tauri dev
 ```
 
+Release build:
+
 ```powershell
-$env:LIBCLANG_PATH="C:\Users\<you>\.conda\envs\localtrans\Lib\site-packages\clang\native"
+$env:LIBCLANG_PATH="C:\Program Files\LLVM\bin"
 npm run tauri build
 ```
 
@@ -49,22 +96,6 @@ Portable release binary:
 src-tauri/target/release/localtrans.exe
 ```
 
-## CLI Examples
-
-```powershell
-.\src-tauri\target\release\localtrans.exe --help
-.\src-tauri\target\release\localtrans.exe version
-.\src-tauri\target\release\localtrans.exe process-file .\README.md
-```
-
-```powershell
-.\src-tauri\target\release\localtrans.exe session-start --source-lang en --target-lang zh
-.\src-tauri\target\release\localtrans.exe session-status
-.\src-tauri\target\release\localtrans.exe session-pause
-.\src-tauri\target\release\localtrans.exe session-resume
-.\src-tauri\target\release\localtrans.exe session-stop
-```
-
 ## CLI Command Matrix
 
 | Command | Purpose | Example |
@@ -72,10 +103,10 @@ src-tauri/target/release/localtrans.exe
 | `hello` | Connectivity smoke test | `localtrans.exe hello --name Alice` |
 | `version` | Print app version | `localtrans.exe version` |
 | `process-file` | Process input file | `localtrans.exe process-file .\README.md` |
-| `download-model` | Download model metadata/runtime payload | `localtrans.exe download-model --model-type asr --model-id asr:sherpa-multi-zipformer` |
+| `download-model` | Download model payload | `localtrans.exe download-model --model-type asr --model-id asr:sherpa-multi-zipformer` |
 | `list-models` | List installed models by type | `localtrans.exe list-models --model-type asr` |
 | `delete-model` | Delete model by id | `localtrans.exe delete-model --model-id asr:sherpa-multi-zipformer` |
-| `session-start` | Start realtime session | `localtrans.exe session-start --source-lang en --target-lang zh` |
+| `session-start` | Start realtime session | `localtrans.exe session-start --source-lang zh --target-lang en` |
 | `session-pause` | Pause realtime session | `localtrans.exe session-pause` |
 | `session-resume` | Resume realtime session | `localtrans.exe session-resume` |
 | `session-stop` | Stop realtime session | `localtrans.exe session-stop` |
@@ -84,78 +115,36 @@ src-tauri/target/release/localtrans.exe
 | `session-history` | Query session history | `localtrans.exe session-history --count 20` |
 | `session-clear-history` | Clear history and metrics | `localtrans.exe session-clear-history` |
 | `session-export-history` | Export history to file | `localtrans.exe session-export-history --output .\history.json` |
-| `session-update-languages` | Update language direction at runtime | `localtrans.exe session-update-languages --source-lang en --target-lang zh` |
-| `translate-text` | One-shot text translation | `localtrans.exe translate-text --text "Hello" --source-lang en --target-lang zh` |
-| `log-status` | Query runtime log state | `localtrans.exe log-status` |
+| `session-update-languages` | Update language direction at runtime | `localtrans.exe session-update-languages --source-lang zh --target-lang en` |
+| `translate-text` | One-shot text translation | `localtrans.exe translate-text --text "你好" --source-lang zh --target-lang en` |
+| `log-status` | Query log status | `localtrans.exe log-status` |
+| `mt-runtime-check` | Verify bundled MT runtime integrity | `localtrans.exe mt-runtime-check` |
 | `tts-voices` | List TTS voices | `localtrans.exe tts-voices --language zh` |
 | `tts-config` | Query TTS config | `localtrans.exe tts-config` |
 | `tts-default-voice` | Query default voice by language | `localtrans.exe tts-default-voice --language zh` |
 | `tts-custom-voices` | Scan custom/local voice models | `localtrans.exe tts-custom-voices --models-dir .\models` |
 | `config-set` | Set config value | `localtrans.exe config-set --key translationEngine --value nllb` |
 | `config-get` | Get config value | `localtrans.exe config-get --key translationEngine` |
-| `call` | Generic command bridge (internal invoke style) | `localtrans.exe call --name get_audio_devices --args-json "{}"` |
+| `call` | Generic command bridge | `localtrans.exe call --name check_mt_runtime --args-json "{}"` |
 
-## GitHub Actions
+## Test Checklist (Portable Release)
 
-Workflow file:
+1. Build release (`npm run tauri build`).
+2. Start GUI (`localtrans.exe` with no args).
+3. In another terminal, run CLI and verify GUI sync:
+   - `session-start`, `session-pause`, `session-resume`, `session-stop`
+4. Verify MT runtime:
+   - `localtrans.exe mt-runtime-check`
+   - `localtrans.exe translate-text --text "你好，我们下午三点开会。" --source-lang zh --target-lang en`
+   - `localtrans.exe translate-text --text "Could you share the latest deployment checklist?" --source-lang en --target-lang zh`
 
-- `.github/workflows/build-windows.yml`
+## CI (GitHub Actions)
 
-Behavior:
+Workflow: `.github/workflows/build-windows.yml`
 
-- triggers on `push`, `pull_request`, and `workflow_dispatch`
-- uses `windows-latest`
-- installs LLVM and sets `LIBCLANG_PATH`
-- runs `npm ci` and `npm run tauri build`
-- uploads:
-  - `src-tauri/target/release/localtrans.exe`
-  - `src-tauri/target/release/bundle/**`
-
-## Development Guide
-
-### Install dependencies
-
-```powershell
-npm ci
-```
-
-### Run frontend only
-
-```powershell
-npm run dev
-```
-
-### Run desktop app in dev mode
-
-```powershell
-npm run tauri dev
-```
-
-### Build release locally
-
-```powershell
-$env:LIBCLANG_PATH="C:\Users\<you>\.conda\envs\localtrans\Lib\site-packages\clang\native"
-npm run tauri build
-```
-
-### Backend check
-
-```powershell
-$env:LIBCLANG_PATH="C:\Users\<you>\.conda\envs\localtrans\Lib\site-packages\clang\native"
-cd src-tauri
-cargo check -q
-```
-
-### Typical troubleshooting
-
-- `Unable to find libclang`:
-  - verify `libclang.dll` exists
-  - ensure `LIBCLANG_PATH` points to the directory containing that file
-- CLI/GUI state mismatch:
-  - test with release binary:
-    - `session-start -> session-status -> session-pause -> session-resume -> session-stop`
+Current CI builds Tauri release artifacts. If you require bundled MT runtime in CI artifacts, ensure `src-tauri/resources/mt-runtime` is available before `npm run tauri build` (for example: checked in, or generated in a prior step using an available Python environment).
 
 ## Output Convention
 
-- success: JSON to stdout
-- failure: JSON to stderr, exit code `1`
+- Success: JSON to `stdout`
+- Failure: JSON to `stderr`, exit code `1`

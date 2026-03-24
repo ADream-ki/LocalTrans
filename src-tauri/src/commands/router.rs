@@ -175,6 +175,8 @@ pub fn execute_named(
             .map_err(|e| AppError::Io(e.to_string()))?),
         "get_log_status" => Ok(serde_json::to_value(super::system::get_log_status()?)
             .map_err(|e| AppError::Io(e.to_string()))?),
+        "check_mt_runtime" => Ok(serde_json::to_value(super::system::check_mt_runtime()?)
+            .map_err(|e| AppError::Io(e.to_string()))?),
         "get_audio_devices" => Ok(serde_json::to_value(super::audio::get_audio_devices()?)
             .map_err(|e| AppError::Io(e.to_string()))?),
         "get_tts_output_devices" => Ok(

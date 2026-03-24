@@ -163,6 +163,7 @@ fn run_cli(command: Commands) -> Result<(), AppError> {
             target_lang,
         )),
         Commands::LogStatus => emit_json(commands::system::get_log_status()),
+        Commands::MtRuntimeCheck => emit_json(commands::system::check_mt_runtime()),
         Commands::TtsVoices { language } => emit_json(commands::tts::get_tts_voices(language)),
         Commands::TtsConfig => emit_json(commands::tts::get_tts_config()),
         Commands::TtsDefaultVoice { language } => {
@@ -241,6 +242,7 @@ fn to_ipc_command(command: &Commands) -> IpcCommand {
             target_lang: target_lang.clone(),
         },
         Commands::LogStatus => IpcCommand::LogStatus,
+        Commands::MtRuntimeCheck => IpcCommand::MtRuntimeCheck,
         Commands::TtsVoices { language } => IpcCommand::TtsVoices {
             language: language.clone(),
         },
