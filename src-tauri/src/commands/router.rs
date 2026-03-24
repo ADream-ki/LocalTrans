@@ -60,14 +60,29 @@ pub fn execute_named(
                     super::session::SessionConfig {
                         source_lang: arg_str(&args, "source_lang")?.to_string(),
                         target_lang: arg_str(&args, "target_lang")?.to_string(),
+                        translation_engine: Some(
+                            args.get("translation_engine")
+                                .and_then(Value::as_str)
+                                .unwrap_or("nllb")
+                                .to_string(),
+                        ),
                         input_device: None,
                         peer_input_device: None,
                         bidirectional: arg_bool(&args, "bidirectional", false),
-                        loci_enhanced: true,
+                        loci_enhanced: false,
                         vad_frame_ms: None,
                         vad_threshold: None,
                         stream_translation_interval_ms: None,
                         stream_translation_min_chars: None,
+                        tts_enabled: None,
+                        tts_auto_play: None,
+                        tts_engine: None,
+                        tts_voice: None,
+                        tts_rate: None,
+                        tts_volume: None,
+                        tts_output_device: None,
+                        stream_tts_interval_ms: None,
+                        stream_tts_min_chars: None,
                     },
                 )?;
                 Ok(serde_json::to_value(super::session::get_session_status()?)
@@ -150,7 +165,7 @@ pub fn execute_named(
                 text: arg_str(&args, "text")?.to_string(),
                 source_lang: arg_str(&args, "source_lang")?.to_string(),
                 target_lang: arg_str(&args, "target_lang")?.to_string(),
-                engine: Some("loci".to_string()),
+                engine: Some("nllb".to_string()),
                 model_path: None,
             },
         )?)

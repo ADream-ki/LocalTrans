@@ -64,11 +64,18 @@ impl LociTranslator {
         let src = Self::normalize_lang_name(source_lang);
         let tgt = Self::normalize_lang_name(target_lang);
         format!(
-            "<|im_start|>system\nYou are a professional translation engine.\nReturn translation text only.\n<|im_end|>\n<|im_start|>user\nTranslate from {src} to {tgt}.\nRules:\n1) Output only the final translation.\n2) No explanations.\n3) Preserve names and numbers.\nText:\n{text}\n<|im_end|>\n<|im_start|>assistant\n"
+            "You are a professional translation engine.\nTranslate from {src} to {tgt}.\nRules:\n1) Output only the final {tgt} translation.\n2) Do NOT repeat the source text.\n3) No explanations, no extra labels.\n4) Preserve names and numbers.\n5) Do not add extra meaning or repeated paraphrases.\nSource text:\n{text}\nTranslation:"
         )
     }
 
-    fn clean_translation_output(raw: &str) -> String {
+    fn normalize_for_compare(text: &str) -> String {
+        text.chars()
+            .filter(|c| !c.is_whitespace() && !c.is_ascii_punctuation())
+            .flat_map(|c| c.to_lowercase())
+            .collect::<String>()
+    }
+
+    fn clean_translation_output(raw: &str, source_text: &str, target_lang: &str) -> String {
         let mut cleaned = raw.trim().to_string();
         for prefix in [
             "TRANSLATION:",
@@ -90,12 +97,113 @@ impl LociTranslator {
                 .trim()
                 .to_string();
         }
-        let first_line = cleaned.lines().next().unwrap_or("").trim();
-        first_line
-            .trim_matches('"')
-            .trim_matches('\'')
-            .trim()
-            .to_string()
+        let source_norm = Self::normalize_for_compare(source_text);
+        let mut candidates: Vec<String> = cleaned
+            .lines()
+            .map(str::trim)
+            .filter(|line| {
+                !line.is_empty()
+                    && !line.starts_with("<|")
+                    && !line.contains("im_start")
+                    && !line.contains("im_end")
+                    && !line.to_ascii_lowercase().starts_with("source text")
+                    && !line.to_ascii_lowercase().starts_with("translation")
+            })
+            .map(|line| {
+                let mut line = line.trim_matches('"').trim_matches('\'').trim().to_string();
+                for marker in [
+                    " Translation:",
+                    " TRANSLATION:",
+                    " 译文：",
+                    " 译文:",
+                    " Answer:",
+                ] {
+                    if let Some((head, _)) = line.split_once(marker) {
+                        let head = head.trim();
+                        if !head.is_empty() {
+                            line = head.to_string();
+                        }
+                    }
+                }
+                line
+            })
+            .filter(|line| !line.is_empty())
+            .collect();
+
+        if candidates.is_empty() {
+            candidates.push(cleaned.trim().to_string());
+        }
+
+        // Remove obvious source echo lines first.
+        candidates.retain(|line| {
+            let n = Self::normalize_for_compare(line);
+            !n.is_empty() && n != source_norm
+        });
+
+        if candidates.is_empty() {
+            return cleaned
+                .trim_matches('"')
+                .trim_matches('\'')
+                .trim()
+                .to_string();
+        }
+
+        // Pick the first candidate that looks usable for target language.
+        for c in &candidates {
+            if !Self::looks_corrupted(c, target_lang) {
+                return Self::trim_repetition_tail(c.trim(), source_text);
+            }
+        }
+
+        Self::trim_repetition_tail(candidates[0].trim(), source_text)
+    }
+
+    fn trim_repetition_tail(text: &str, source_text: &str) -> String {
+        let mut out = text.trim().to_string();
+        if out.is_empty() {
+            return out;
+        }
+        let source_sentence_count = source_text
+            .chars()
+            .filter(|c| matches!(c, '.' | '!' | '?' | '。' | '！' | '？'))
+            .count()
+            .max(1);
+
+        let mut sentence = String::new();
+        let mut sentences: Vec<String> = Vec::new();
+        for ch in out.chars() {
+            sentence.push(ch);
+            if matches!(ch, '.' | '!' | '?' | '。' | '！' | '？') {
+                let seg = sentence.trim();
+                if !seg.is_empty() {
+                    sentences.push(seg.to_string());
+                }
+                sentence.clear();
+            }
+        }
+        if !sentence.trim().is_empty() {
+            sentences.push(sentence.trim().to_string());
+        }
+
+        if !sentences.is_empty() {
+            let mut dedup: Vec<String> = Vec::new();
+            for seg in sentences {
+                let n = Self::normalize_for_compare(&seg);
+                let is_dup = dedup
+                    .last()
+                    .map(|last| Self::normalize_for_compare(last) == n)
+                    .unwrap_or(false);
+                if !is_dup {
+                    dedup.push(seg);
+                }
+                if dedup.len() >= source_sentence_count {
+                    break;
+                }
+            }
+            out = dedup.join(" ").trim().to_string();
+        }
+
+        out
     }
 
     fn looks_corrupted(text: &str, target_lang: &str) -> bool {
@@ -103,14 +211,14 @@ impl LociTranslator {
         if t.is_empty() {
             return true;
         }
-        if t.len() < 2 {
+        if t.len() < 1 {
             return true;
         }
         let noisy = ['{', '}', '|', '<', '>', '/', '\\', '*', '_'];
         let chars: Vec<char> = t.chars().collect();
         let n = chars.len().max(1);
         let noisy_count = chars.iter().filter(|c| noisy.contains(c)).count();
-        if noisy_count * 4 > n {
+        if noisy_count * 2 > n {
             return true;
         }
 
@@ -131,11 +239,11 @@ impl LociTranslator {
             .count();
 
         if matches!(target.as_str(), "zh" | "zh-cn" | "zh-hans" | "zh-tw" | "zh-hant")
-            && cjk_count * 5 < n
+            && cjk_count * 10 < n
         {
             return true;
         }
-        if target.starts_with("en") && alpha_count * 2 < n {
+        if target.starts_with("en") && alpha_count * 5 < n {
             return true;
         }
         punct_count * 5 > n
@@ -192,27 +300,46 @@ impl Translator for LociTranslator {
                 let prompt = Self::build_translation_prompt(text, source_lang, target_lang);
 
                 let mut params = GenerationParams {
-                    max_tokens: 256,
-                    temperature: 0.2,
-                    top_p: 0.85,
-                    top_k: 20,
-                    repeat_penalty: 1.02,
+                    max_tokens: 96,
+                    temperature: 0.0,
+                    top_p: 1.0,
+                    top_k: 1,
+                    repeat_penalty: 1.0,
                     ..Default::default()
                 };
 
                 for attempt in 0..2 {
                     match engine.generate(&prompt, params.clone()) {
                         Ok(result) => {
-                            let translated = Self::clean_translation_output(&result);
+                            let translated =
+                                Self::clean_translation_output(&result, text, target_lang);
+                            let src_norm = Self::normalize_for_compare(text);
+                            let dst_norm = Self::normalize_for_compare(&translated);
+                            let is_echo = !src_norm.is_empty() && src_norm == dst_norm;
                             if Self::looks_corrupted(&translated, target_lang) && attempt == 0 {
-                                params.temperature = 0.05;
-                                params.top_p = 0.4;
-                                params.top_k = 8;
+                                params.temperature = 0.1;
+                                params.top_p = 0.9;
+                                params.top_k = 40;
+                                continue;
+                            }
+                            if is_echo && attempt == 0 && !text.trim().is_empty() {
+                                params.temperature = 0.15;
+                                params.top_p = 0.95;
+                                params.top_k = 64;
                                 continue;
                             }
                             if Self::looks_corrupted(&translated, target_lang) {
+                                tracing::warn!(
+                                    "Loci translation output looks low-quality, returning best-effort result: {}",
+                                    translated
+                                );
                                 self.on_failure();
-                                anyhow::bail!("Loci translation output looks corrupted");
+                                return Ok(TranslationResult {
+                                    text: translated,
+                                    source_lang: source_lang.to_string(),
+                                    target_lang: target_lang.to_string(),
+                                    confidence: 0.55,
+                                });
                             }
                             self.on_success();
                             tracing::debug!("Translation: '{}' -> '{}'", text, translated);
@@ -286,6 +413,11 @@ mod tests {
     fn test_clean_output() {
         let out = LociTranslator::clean_translation_output("Translation: 你好世界");
         assert_eq!(out, "你好世界");
+
+        let out = LociTranslator::clean_translation_output(
+            "会议明天上午9:30开始，请携带身份证。 Translation: 会议明天上午9:30开始，请携带身份证。",
+        );
+        assert_eq!(out, "会议明天上午9:30开始，请携带身份证。");
     }
 
     #[test]

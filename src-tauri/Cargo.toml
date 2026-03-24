@@ -47,11 +47,12 @@ dirs = "6.0"
 futures = "0.3"
 sherpa-rs = { version = "0.6", features = ["download-binaries", "tts"], optional = true }
 whisper-rs = { version = "0.11", optional = true }
+loci = { path = "../../Loci", optional = true }
 
 [features]
-default = ["custom-protocol", "sherpa-backend"]
+default = ["custom-protocol", "sherpa-backend", "loci-backend"]
 custom-protocol = ["tauri/custom-protocol"]
 sherpa-backend = ["sherpa-rs"]
-loci-backend = []
+loci-backend = ["loci"]
 mock-asr = []
 whisper-backend = ["whisper-rs"]

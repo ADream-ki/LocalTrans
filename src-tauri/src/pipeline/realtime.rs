@@ -21,7 +21,8 @@ use uuid::Uuid;
 use crate::audio::AudioCapture;
 use crate::audio::resample_linear;
 use crate::asr::{AsrConfig, StreamingConfig, StreamingAsrEngine, StreamingResult};
-use crate::translation::{Translator, LociTranslator, NllbTranslator};
+use crate::commands::tts::TtsRequest;
+use crate::translation::{LociTranslator, NllbTranslator, Translator};
 use super::events::{
     EventBroadcaster, HistoryManager, HistoryItem, PipelineEvent, PipelineState,
     ErrorCode, TranscriptionSegment, TranslationInfo,
@@ -51,6 +52,8 @@ pub struct PipelineConfig {
     pub max_segment_duration_ms: u64,
     /// Enable Loci enhancement for translations
     pub loci_enhanced: bool,
+    /// Translation engine ("nllb" for deterministic MT, "loci" for LLM translation)
+    pub translation_engine: String,
     /// Audio buffer chunk size in samples
     pub chunk_size: usize,
     /// Maximum history items to keep
@@ -59,6 +62,24 @@ pub struct PipelineConfig {
     pub stream_translation_interval_ms: u64,
     /// Minimum source text chars to emit a streaming translation
     pub stream_translation_min_chars: usize,
+    /// Enable TTS playback in backend pipeline
+    pub tts_enabled: bool,
+    /// Auto play translated text
+    pub tts_auto_play: bool,
+    /// TTS engine name
+    pub tts_engine: String,
+    /// TTS voice id
+    pub tts_voice: String,
+    /// TTS speaking rate
+    pub tts_rate: f32,
+    /// TTS volume
+    pub tts_volume: f32,
+    /// TTS output device id
+    pub tts_output_device: Option<String>,
+    /// Streaming TTS emit interval
+    pub stream_tts_interval_ms: u64,
+    /// Minimum translated chars to trigger streaming TTS
+    pub stream_tts_min_chars: usize,
 }
 
 impl Default for PipelineConfig {
@@ -74,10 +95,20 @@ impl Default for PipelineConfig {
             min_speech_duration_ms: 260,
             max_segment_duration_ms: 30000,
             loci_enhanced: false,
+            translation_engine: "nllb".to_string(),
             chunk_size: 480, // 30ms at 16kHz
             max_history: 500,
-            stream_translation_interval_ms: 900,
-            stream_translation_min_chars: 8,
+            stream_translation_interval_ms: 450,
+            stream_translation_min_chars: 4,
+            tts_enabled: true,
+            tts_auto_play: true,
+            tts_engine: "sherpa-melo".to_string(),
+            tts_voice: "sherpa-melo-female".to_string(),
+            tts_rate: 1.0,
+            tts_volume: 1.0,
+            tts_output_device: None,
+            stream_tts_interval_ms: 900,
+            stream_tts_min_chars: 8,
         }
     }
 }
@@ -183,33 +214,41 @@ impl RealtimePipeline {
         // Create event broadcaster
         let broadcaster = EventBroadcaster::new(app_handle);
         
-        // Initialize translator.
-        // For lower latency, default to lightweight built-in translator unless loci_enhanced=true.
-        let translator: Box<dyn Translator> = if config.loci_enhanced {
-            match find_default_loci_model() {
-                Some(model_path) => match LociTranslator::init(&model_path) {
-                    Ok(t) => Box::new(t),
-                    Err(e) => {
-                        let _ = broadcaster.emit_error(
-                            ErrorCode::TranslationModelNotLoaded,
-                            format!("Failed to load Loci model ({}): {}. Falling back to built-in translator.", model_path.display(), e),
-                        );
-                        Box::new(NllbTranslator::new())
-                    }
-                },
-                None => {
+        let engine = config.translation_engine.to_ascii_lowercase();
+        let translator: Box<dyn Translator> = match engine.as_str() {
+            "loci" => {
+                if !config.loci_enhanced {
+                    return Err(anyhow!(
+                        "Loci translation requested but loci_enhanced is disabled"
+                    ));
+                }
+                let model_path = find_default_loci_model().ok_or_else(|| {
+                    anyhow!(
+                        "No Loci model found under {}",
+                        default_loci_dir().display()
+                    )
+                })?;
+                let translator = LociTranslator::init(&model_path).map_err(|e| {
                     let _ = broadcaster.emit_error(
                         ErrorCode::TranslationModelNotLoaded,
                         format!(
-                            "No Loci model found under {}. Falling back to built-in translator.",
-                            default_loci_dir().display()
+                            "Failed to load Loci model ({}): {}",
+                            model_path.display(),
+                            e
                         ),
                     );
-                    Box::new(NllbTranslator::new())
-                }
+                    anyhow!(
+                        "failed to load Loci model ({}): {}",
+                        model_path.display(),
+                        e
+                    )
+                })?;
+                Box::new(translator)
             }
-        } else {
-            Box::new(NllbTranslator::new())
+            "nllb" | "argos" | "mt" => Box::new(NllbTranslator::new()),
+            other => {
+                return Err(anyhow!("Unsupported translation engine: {}", other));
+            }
         };
         
         let pipeline_id = Uuid::new_v4().to_string();
@@ -398,7 +437,9 @@ impl RealtimePipeline {
             let mut last_stats_emit = Instant::now();
             let mut last_translation_error_emit = Instant::now() - Duration::from_secs(60);
             let mut last_stream_translation_emit = Instant::now() - Duration::from_secs(60);
+            let mut last_stream_tts_emit = Instant::now() - Duration::from_secs(60);
             let mut last_stream_source_text = String::new();
+            let mut last_tts_text = String::new();
             let mut stream_seq: u64 = 0;
             let mut chunk_buffer: std::collections::VecDeque<f32> =
                 std::collections::VecDeque::with_capacity(asr_chunk_size * 8);
@@ -518,6 +559,18 @@ impl RealtimePipeline {
                                         );
                                         last_stream_source_text = ptxt.to_string();
                                         last_stream_translation_emit = Instant::now();
+
+                                        if config.tts_enabled
+                                            && config.tts_auto_play
+                                            && translation.text.trim().len() >= config.stream_tts_min_chars
+                                            && last_stream_tts_emit.elapsed()
+                                                >= Duration::from_millis(config.stream_tts_interval_ms)
+                                            && translation.text.trim() != last_tts_text
+                                        {
+                                            spawn_pipeline_tts(&config, translation.text.clone());
+                                            last_stream_tts_emit = Instant::now();
+                                            last_tts_text = translation.text.trim().to_string();
+                                        }
                                     }
                                     Err(err) => {
                                         if last_translation_error_emit.elapsed() >= Duration::from_secs(5) {
@@ -645,6 +698,15 @@ impl RealtimePipeline {
                                                 timestamp: chrono::Utc::now(),
                                             });
                                         }
+                                    }
+
+                                    if config.tts_enabled
+                                        && config.tts_auto_play
+                                        && !translation.text.trim().is_empty()
+                                        && translation.text.trim() != last_tts_text
+                                    {
+                                        spawn_pipeline_tts(&config, translation.text.clone());
+                                        last_tts_text = translation.text.trim().to_string();
                                     }
                                     }
                                     Err(err) => {
@@ -983,6 +1045,25 @@ fn find_default_loci_model() -> Option<PathBuf> {
     }
 
     best.map(|(_, p)| p)
+}
+
+fn spawn_pipeline_tts(config: &PipelineConfig, text: String) {
+    let request = TtsRequest {
+        text,
+        voice: config.tts_voice.clone(),
+        engine: Some(config.tts_engine.clone()),
+        rate: config.tts_rate,
+        pitch: Some(0.0),
+        volume: Some(config.tts_volume),
+        output_device: config.tts_output_device.clone(),
+        custom_voice: None,
+    };
+
+    tokio::task::spawn_blocking(move || {
+        if let Err(e) = crate::commands::tts::speak_text(request) {
+            tracing::warn!("pipeline tts playback failed: {}", e);
+        }
+    });
 }
 
 /// Pipeline manager for handling multiple concurrent pipelines

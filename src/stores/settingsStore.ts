@@ -131,7 +131,7 @@ export const useSettingsStore = create<SettingsState>()(
       asrModelSize: "base",
 
       // Translation
-      translationEngine: "loci",
+      translationEngine: "nllb",
       translationModelPath: "",
       sourceLanguage: "en",
       targetLanguage: "zh",
@@ -163,10 +163,10 @@ export const useSettingsStore = create<SettingsState>()(
       // VAD frame / chunk size in milliseconds
       chunkSize: 30,
       gpuAcceleration: true,
-      streamTranslationIntervalMs: 900,
-      streamTranslationMinChars: 8,
-      streamTtsIntervalMs: 1500,
-      streamTtsMinChars: 12,
+      streamTranslationIntervalMs: 450,
+      streamTranslationMinChars: 4,
+      streamTtsIntervalMs: 900,
+      streamTtsMinChars: 8,
 
       // Actions
       setTheme: (theme) => set({ theme }),
@@ -219,16 +219,16 @@ export const useSettingsStore = create<SettingsState>()(
     }),
     {
       name: "localtrans-settings",
-      version: 4,
+      version: 5,
       migrate: (persistedState, version) => {
         const state = (persistedState ?? {}) as Partial<SettingsState>;
         if (version < 3) {
           state.peerInputDevice = state.peerInputDevice ?? null;
           state.peerTtsOutputDevice = state.peerTtsOutputDevice ?? null;
         }
-        if (version < 4) {
-          if (!state.translationEngine || state.translationEngine === "nllb") {
-            state.translationEngine = "loci";
+        if (version < 5) {
+          if (!state.translationEngine || state.translationEngine === "loci") {
+            state.translationEngine = "nllb";
           }
         }
         return state as SettingsState;

@@ -34,10 +34,10 @@ struct TranslationService {
 
 impl TranslationService {
     fn translate(&mut self, request: &TranslateRequest) -> anyhow::Result<TranslationResult> {
-        let engine = request.engine.as_deref().unwrap_or("loci");
+        let engine = request.engine.as_deref().unwrap_or("nllb");
         match engine {
             "loci" => self.translate_loci(request),
-            "nllb" => self
+            "nllb" | "argos" => self
                 .nllb
                 .translate(&request.text, &request.source_lang, &request.target_lang),
             other => anyhow::bail!("Unsupported translation engine: {}", other),
@@ -52,9 +52,10 @@ impl TranslationService {
         };
 
         let Some(model_path) = model_path else {
-            return self
-                .nllb
-                .translate(&request.text, &request.source_lang, &request.target_lang);
+            anyhow::bail!(
+                "Loci model not found under {}",
+                default_loci_dir().display()
+            );
         };
 
         let need_reload = match self.loci_model_path.as_ref() {
@@ -63,35 +64,24 @@ impl TranslationService {
         };
 
         if need_reload {
-            match LociTranslator::init(&model_path) {
-                Ok(translator) => {
-                    self.loci = Some(translator);
-                    self.loci_model_path = Some(model_path);
-                }
-                Err(_) => {
-                    self.loci = None;
-                    self.loci_model_path = None;
-                    return self
-                        .nllb
-                        .translate(&request.text, &request.source_lang, &request.target_lang);
-                }
-            }
+            let translator = LociTranslator::init(&model_path).map_err(|e| {
+                anyhow::anyhow!(
+                    "failed to initialize Loci model ({}): {}",
+                    model_path.display(),
+                    e
+                )
+            })?;
+            self.loci = Some(translator);
+            self.loci_model_path = Some(model_path);
         }
 
         match self.loci.as_mut() {
-            Some(translator) => match translator.translate(
+            Some(translator) => translator.translate(
                 &request.text,
                 &request.source_lang,
                 &request.target_lang,
-            ) {
-                Ok(v) => Ok(v),
-                Err(_) => self
-                    .nllb
-                    .translate(&request.text, &request.source_lang, &request.target_lang),
-            },
-            None => self
-                .nllb
-                .translate(&request.text, &request.source_lang, &request.target_lang),
+            ),
+            None => anyhow::bail!("Loci translator not initialized"),
         }
     }
 }
@@ -127,7 +117,7 @@ pub fn translate_text_cli(
         text,
         source_lang,
         target_lang,
-        engine: Some("loci".to_string()),
+        engine: Some("nllb".to_string()),
         model_path: None,
     })
 }

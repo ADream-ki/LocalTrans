@@ -304,7 +304,7 @@ async fn synthesize_with_backend_fallback(
     pitch: i32,
 ) -> AppResult<tts::TtsAudio> {
     let order: Vec<&str> = match engine_name {
-        "sherpa-melo" => vec!["edge", "system"],
+        "sherpa-melo" => vec!["piper", "system", "edge"],
         "edge-tts" => vec!["edge", "system"],
         "system" => vec!["system", "edge"],
         "piper" => vec!["piper", "edge", "system"],

@@ -173,7 +173,6 @@ function SessionPage() {
   const [isCompact, setIsCompact] = useState(false);
   const [isSpeaking, setIsSpeaking] = useState(false);
   const lastSpokenTextRef = useRef("");
-  const lastStreamSpeakAtRef = useRef(0);
   const [ttsOutputDevices, setTtsOutputDevices] = useState<
     { id: string; name: string; is_default: boolean }[]
   >([]);
@@ -457,25 +456,7 @@ function SessionPage() {
           });
         }
 
-        const s = useSettingsStore.getState();
-        const now = Date.now();
-        const streamMinChars = Math.max(2, s.streamTtsMinChars ?? 12);
-        const streamInterval = Math.max(500, s.streamTtsIntervalMs ?? 1500);
-        const streamSpeakReady =
-          !isStreaming ||
-          ((/[。！？.!?]$/.test(p.target_text) || p.target_text.length >= streamMinChars) &&
-            now - lastStreamSpeakAtRef.current >= streamInterval);
-        if (
-          s.ttsEnabled &&
-          s.ttsAutoPlay &&
-          streamSpeakReady &&
-          mergedTarget &&
-          mergedTarget !== lastSpokenTextRef.current
-        ) {
-          const forwardOutput = s.peerTtsOutputDevice ?? s.ttsOutputDevice;
-          if (isStreaming) lastStreamSpeakAtRef.current = now;
-          speakText(mergedTarget, forwardOutput);
-        }
+        // Auto TTS is handled by backend pipeline now.
       }),
 
       listen<{
@@ -483,14 +464,7 @@ function SessionPage() {
         forward?: DirectionalTranslationInfo | null;
         backward?: DirectionalTranslationInfo | null;
         timestamp: string;
-      }>("pipeline:bidirectional-translation", (event) => {
-        const p = event.payload;
-        const s = useSettingsStore.getState();
-        if (!s.ttsEnabled || !s.ttsAutoPlay) return;
-        if (p.backward?.target_text && p.backward.target_text !== lastSpokenTextRef.current) {
-          speakText(p.backward.target_text, s.ttsOutputDevice);
-        }
-      }),
+      }>("pipeline:bidirectional-translation", () => {}),
 
       listen<{
         type: "error";
@@ -765,7 +739,7 @@ function SessionPage() {
           <div className="flex items-start gap-s p-m bg-warning/5 rounded-large border border-warning/20">
             <AlertCircle size={16} className="text-warning mt-xs flex-shrink-0" />
             <div className="text-xs text-text-secondary leading-relaxed">
-              Loci 当前处于保护状态，已自动回退 NLLB。
+              Loci 当前处于保护状态，翻译已暂停（不再回退到占位引擎）。
               {runtimeStatus.lociUnhealthyRemainingSec !== undefined && runtimeStatus.lociUnhealthyRemainingSec > 0 && (
                 <span className="ml-xs font-mono">
                   预计 {runtimeStatus.lociUnhealthyRemainingSec}s 后可重试。

@@ -85,6 +85,7 @@ export interface SessionState {
 type BackendSessionConfig = {
   sourceLang: string;
   targetLang: string;
+  translationEngine?: string | null;
   inputDevice: string | null;
   peerInputDevice: string | null;
   bidirectional: boolean;
@@ -93,6 +94,15 @@ type BackendSessionConfig = {
   vadThreshold?: number | null;
   streamTranslationIntervalMs?: number | null;
   streamTranslationMinChars?: number | null;
+  ttsEnabled?: boolean | null;
+  ttsAutoPlay?: boolean | null;
+  ttsEngine?: string | null;
+  ttsVoice?: string | null;
+  ttsRate?: number | null;
+  ttsVolume?: number | null;
+  ttsOutputDevice?: string | null;
+  streamTtsIntervalMs?: number | null;
+  streamTtsMinChars?: number | null;
 };
 
 export const useSessionStore = create<SessionState>((set, get) => ({
@@ -125,7 +135,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   asrModelSize: "base",
 
   // Translation settings
-  translationEngine: "loci",
+  translationEngine: "nllb",
 
   // Actions
   setPipelineStatus: (status, error) => {
@@ -145,6 +155,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     const config: BackendSessionConfig = {
       sourceLang: state.sourceLang,
       targetLang: state.targetLang,
+      translationEngine: state.translationEngine,
       inputDevice: state.selectedInputDevice,
       peerInputDevice: state.selectedPeerInputDevice,
       bidirectional: state.bidirectional,
@@ -152,6 +163,15 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       vadFrameMs: settings.chunkSize,
       streamTranslationIntervalMs: settings.streamTranslationIntervalMs,
       streamTranslationMinChars: settings.streamTranslationMinChars,
+      ttsEnabled: settings.ttsEnabled,
+      ttsAutoPlay: settings.ttsAutoPlay,
+      ttsEngine: settings.ttsEngine,
+      ttsVoice: settings.ttsVoice,
+      ttsRate: settings.ttsRate,
+      ttsVolume: settings.ttsVolume,
+      ttsOutputDevice: settings.ttsOutputDevice,
+      streamTtsIntervalMs: settings.streamTtsIntervalMs,
+      streamTtsMinChars: settings.streamTtsMinChars,
     };
 
     set({ status: "initializing", isRunning: true, lastError: null });

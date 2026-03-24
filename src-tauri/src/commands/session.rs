@@ -14,6 +14,7 @@ use crate::session_bus;
 pub struct SessionConfig {
     pub source_lang: String,
     pub target_lang: String,
+    pub translation_engine: Option<String>,
     pub input_device: Option<String>,
     pub peer_input_device: Option<String>,
     pub bidirectional: bool,
@@ -22,6 +23,15 @@ pub struct SessionConfig {
     pub vad_threshold: Option<f32>,
     pub stream_translation_interval_ms: Option<u32>,
     pub stream_translation_min_chars: Option<u32>,
+    pub tts_enabled: Option<bool>,
+    pub tts_auto_play: Option<bool>,
+    pub tts_engine: Option<String>,
+    pub tts_voice: Option<String>,
+    pub tts_rate: Option<f32>,
+    pub tts_volume: Option<f32>,
+    pub tts_output_device: Option<String>,
+    pub stream_tts_interval_ms: Option<u32>,
+    pub stream_tts_min_chars: Option<u32>,
 }
 
 #[derive(Debug, Serialize)]
@@ -148,6 +158,7 @@ fn cfg_to_pipeline(config: SessionConfig) -> PipelineConfig {
     let mut pipeline = PipelineConfig {
         source_lang: config.source_lang,
         target_lang: config.target_lang,
+        translation_engine: config.translation_engine.unwrap_or_else(|| "nllb".to_string()),
         input_device: config.input_device,
         peer_input_device: config.peer_input_device,
         bidirectional: config.bidirectional,
@@ -165,6 +176,33 @@ fn cfg_to_pipeline(config: SessionConfig) -> PipelineConfig {
     }
     if let Some(v) = config.stream_translation_min_chars {
         pipeline.stream_translation_min_chars = usize::try_from(v).unwrap_or(8).clamp(2, 64);
+    }
+    if let Some(v) = config.tts_enabled {
+        pipeline.tts_enabled = v;
+    }
+    if let Some(v) = config.tts_auto_play {
+        pipeline.tts_auto_play = v;
+    }
+    if let Some(v) = config.tts_engine {
+        pipeline.tts_engine = v;
+    }
+    if let Some(v) = config.tts_voice {
+        pipeline.tts_voice = v;
+    }
+    if let Some(v) = config.tts_rate {
+        pipeline.tts_rate = v.clamp(0.5, 2.0);
+    }
+    if let Some(v) = config.tts_volume {
+        pipeline.tts_volume = v.clamp(0.0, 1.0);
+    }
+    if let Some(v) = config.tts_output_device {
+        pipeline.tts_output_device = if v.trim().is_empty() { None } else { Some(v) };
+    }
+    if let Some(v) = config.stream_tts_interval_ms {
+        pipeline.stream_tts_interval_ms = u64::from(v).clamp(500, 10000);
+    }
+    if let Some(v) = config.stream_tts_min_chars {
+        pipeline.stream_tts_min_chars = usize::try_from(v).unwrap_or(8).clamp(2, 128);
     }
     pipeline
 }
@@ -243,10 +281,34 @@ fn apply_pending_control(pipe: Arc<RealtimePipeline>) {
 
 #[tauri::command]
 pub fn start_session(app: AppHandle, config: SessionConfig) -> AppResult<()> {
+    #[cfg(feature = "mock-asr")]
+    {
+        return Err(AppError::InvalidState(
+            "This build uses mock-asr and cannot provide real-time accurate transcription. Rebuild without mock-asr.".to_string(),
+        ));
+    }
+
+    #[cfg(not(feature = "sherpa-backend"))]
+    {
+        return Err(AppError::InvalidState(
+            "This build has no real ASR backend (sherpa-backend missing). Rebuild with sherpa-backend.".to_string(),
+        ));
+    }
+
     ensure_not_running()?;
     if !super::model::has_ready_model("asr")? {
         return Err(AppError::InvalidState(
             "ASR model is required before starting session".to_string(),
+        ));
+    }
+    let translation_engine = config
+        .translation_engine
+        .as_deref()
+        .unwrap_or("nllb")
+        .to_ascii_lowercase();
+    if translation_engine == "loci" && !super::model::has_ready_model("loci")? {
+        return Err(AppError::InvalidState(
+            "Loci translation model is required when translationEngine=loci".to_string(),
         ));
     }
 

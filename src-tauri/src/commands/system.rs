@@ -50,16 +50,16 @@ pub fn get_runtime_status() -> AppResult<RuntimeStatus> {
             action: Some("open_model_page".to_string()),
         },
         translation: RuntimeComponentStatus {
-            ready: true,
+            ready: loci_ready,
             path: if loci_ready {
                 models_dir.join("loci").display().to_string()
             } else {
-                "builtin://translation-engine".to_string()
+                models_dir.join("loci").display().to_string()
             },
             message: if loci_ready {
                 "Loci enhanced translation ready".to_string()
             } else {
-                "Built-in translation ready".to_string()
+                "Loci translation model not installed".to_string()
             },
             action: if loci_ready {
                 None

@@ -81,15 +81,15 @@ impl Default for StreamingConfig {
     fn default() -> Self {
         Self {
             sample_rate: 16000,
-            min_speech_duration_ms: 300,
+            min_speech_duration_ms: 220,
             max_speech_duration_ms: 30000, // 30 seconds max
-            silence_duration_ms: 500,
+            silence_duration_ms: 350,
             chunk_size: 1600, // 100ms at 16kHz
             enable_partial_results: true,
             // Calling a full offline decode too frequently is expensive.
             // A slightly slower cadence keeps CPU usage stable while still
             // feeling "live" in the UI.
-            partial_result_interval_ms: 400,
+            partial_result_interval_ms: 220,
             vad_sensitivity: 0.5,
             vad_energy_threshold: 0.01,
             auto_reset_timeout_ms: 5000,
