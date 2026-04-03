@@ -10,7 +10,7 @@ fn config_file() -> AppResult<PathBuf> {
     Ok(std::env::current_dir()?.join(".localtrans-config.json"))
 }
 
-fn load_map() -> AppResult<BTreeMap<String, Value>> {
+pub(crate) fn load_map() -> AppResult<BTreeMap<String, Value>> {
     let path = config_file()?;
     if !path.exists() {
         return Ok(BTreeMap::new());
@@ -26,6 +26,14 @@ fn save_map(map: &BTreeMap<String, Value>) -> AppResult<()> {
     let text = serde_json::to_string_pretty(map).map_err(|e| crate::error::AppError::Io(e.to_string()))?;
     fs::write(path, text)?;
     Ok(())
+}
+
+pub(crate) fn get_string(key: &str) -> Option<String> {
+    load_map()
+        .ok()
+        .and_then(|map| map.get(key).cloned())
+        .and_then(|value| value.as_str().map(ToString::to_string))
+        .filter(|value| !value.trim().is_empty())
 }
 
 #[tauri::command(rename_all = "snake_case")]

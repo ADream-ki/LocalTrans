@@ -89,6 +89,8 @@ function SettingsPage() {
     asrEngine,
     asrModelSize,
     asrLanguage,
+    translationEngine,
+    lociModelPath,
     vadEnabled,
     chunkSize,
     gpuAcceleration,
@@ -109,6 +111,8 @@ function SettingsPage() {
     setAsrEngine,
     setAsrModelSize,
     setAsrLanguage,
+    setTranslationEngine,
+    setLociModelPath,
     setVadEnabled,
     setChunkSize,
     setGpuAcceleration,
@@ -178,6 +182,10 @@ function SettingsPage() {
         if (typeof cfg.asrEngine === "string") setAsrEngine(cfg.asrEngine as typeof asrEngine);
         if (typeof cfg.asrModelSize === "string") setAsrModelSize(cfg.asrModelSize as typeof asrModelSize);
         if (typeof cfg.asrLanguage === "string") setAsrLanguage(cfg.asrLanguage);
+        if (typeof cfg.translationEngine === "string") {
+          setTranslationEngine(cfg.translationEngine as typeof translationEngine);
+        }
+        if (typeof cfg.lociModelPath === "string") setLociModelPath(cfg.lociModelPath);
         if (typeof cfg.vadEnabled === "boolean") setVadEnabled(cfg.vadEnabled);
         if (typeof cfg.chunkSize === "number") setChunkSize(cfg.chunkSize);
         if (typeof cfg.gpuAcceleration === "boolean") setGpuAcceleration(cfg.gpuAcceleration);
@@ -211,6 +219,8 @@ function SettingsPage() {
       asrEngine,
       asrModelSize,
       asrLanguage,
+      translationEngine,
+      lociModelPath,
       vadEnabled,
       chunkSize,
       gpuAcceleration,
@@ -235,6 +245,8 @@ function SettingsPage() {
     asrEngine,
     asrModelSize,
     asrLanguage,
+    translationEngine,
+    lociModelPath,
     vadEnabled,
     chunkSize,
     gpuAcceleration,
@@ -819,6 +831,45 @@ function SettingsPage() {
                   <option value={48000}>48000 Hz</option>
                 </select>
               </div>
+            </div>
+          </div>
+        </GlassCard>
+
+        <GlassCard className="p-l">
+          <h2 className="text-l font-semibold text-text-primary mb-m flex items-center gap-s">
+            <Languages size={18} className="text-primary" />
+            翻译引擎设置
+          </h2>
+          <div className="space-y-m">
+            <div>
+              <label className="text-xs text-text-secondary block mb-xs">翻译引擎</label>
+              <select
+                value={translationEngine}
+                onChange={(e) => setTranslationEngine(e.target.value as typeof translationEngine)}
+                className="select-field"
+              >
+                <option value="loci">Loci 本地推理引擎</option>
+                <option value="nllb">NLLB / Argos 确定性机翻</option>
+                <option value="argos">Argos 兼容模式</option>
+                <option value="m2m">M2M 兼容模式</option>
+              </select>
+              <p className="text-xs text-text-tertiary mt-xs">
+                `loci` 走本地 LLM 推理；其余兼容项当前会统一落到确定性 MT 运行时。
+              </p>
+            </div>
+
+            <div>
+              <label className="text-xs text-text-secondary block mb-xs">Loci 模型路径（可选）</label>
+              <input
+                type="text"
+                value={lociModelPath}
+                onChange={(e) => setLociModelPath(e.target.value)}
+                className="input-field"
+                placeholder="留空则自动扫描 LocalTrans\\models\\loci 下最大的 .gguf"
+              />
+              <p className="text-xs text-text-tertiary mt-xs">
+                指定后，单次翻译和实时会话都会优先使用这个 GGUF 模型。
+              </p>
             </div>
           </div>
         </GlassCard>

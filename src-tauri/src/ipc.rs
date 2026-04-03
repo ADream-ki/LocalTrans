@@ -36,6 +36,7 @@ pub enum IpcCommand {
     SessionStart {
         source_lang: String,
         target_lang: String,
+        translation_engine: Option<String>,
         bidirectional: bool,
         latency_profile: Option<String>,
     },
@@ -59,6 +60,8 @@ pub enum IpcCommand {
         text: String,
         source_lang: String,
         target_lang: String,
+        engine: Option<String>,
+        model_path: Option<String>,
     },
     LogStatus,
     MtRuntimeCheck,
@@ -208,6 +211,7 @@ fn execute(command: IpcCommand, app: AppHandle) -> AppResult<Value> {
         IpcCommand::SessionStart {
             source_lang,
             target_lang,
+            translation_engine,
             bidirectional,
             latency_profile,
         } => {
@@ -216,11 +220,11 @@ fn execute(command: IpcCommand, app: AppHandle) -> AppResult<Value> {
                 commands::session::SessionConfig {
                     source_lang,
                     target_lang,
-                    translation_engine: Some("nllb".to_string()),
+                    loci_enhanced: matches!(translation_engine.as_deref(), Some("loci")),
+                    translation_engine,
                     input_device: None,
                     peer_input_device: None,
                     bidirectional,
-                    loci_enhanced: false,
                     vad_frame_ms: None,
                     vad_threshold: None,
                     stream_translation_interval_ms: None,
@@ -269,13 +273,15 @@ fn execute(command: IpcCommand, app: AppHandle) -> AppResult<Value> {
             text,
             source_lang,
             target_lang,
+            engine,
+            model_path,
         } => to_json(commands::translation::translate_text(
             commands::translation::TranslateRequest {
                 text,
                 source_lang,
                 target_lang,
-                engine: Some("nllb".to_string()),
-                model_path: None,
+                engine,
+                model_path,
             },
         )),
         IpcCommand::LogStatus => to_json(commands::system::get_log_status()),

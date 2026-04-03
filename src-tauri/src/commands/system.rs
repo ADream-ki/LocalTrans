@@ -49,6 +49,45 @@ pub fn get_runtime_status() -> AppResult<RuntimeStatus> {
     let asr_ready = super::model::has_ready_model("asr")?;
     let loci_ready = super::model::has_ready_model("loci")?;
     let tts_ready = super::model::has_ready_model("tts")?;
+    let translation_engine = super::translation::resolved_translation_engine(None);
+    let mt_ready = check_mt_runtime()?.ready;
+    let (translation_ready, translation_path, translation_message, translation_action) =
+        if translation_engine == "loci" {
+            (
+                loci_ready,
+                models_dir.join("loci").display().to_string(),
+                if loci_ready {
+                    "Loci enhanced translation ready".to_string()
+                } else {
+                    "Loci translation model not installed".to_string()
+                },
+                if loci_ready {
+                    None
+                } else {
+                    Some("download_loci_model".to_string())
+                },
+            )
+        } else {
+            let mt_root = if let Some(path) = resolve_bundled_argos_packages() {
+                path
+            } else {
+                models_dir.join("mt").display().to_string()
+            };
+            (
+                mt_ready,
+                mt_root,
+                if mt_ready {
+                    "Deterministic MT runtime ready".to_string()
+                } else {
+                    "Bundled MT runtime incomplete".to_string()
+                },
+                if mt_ready {
+                    None
+                } else {
+                    Some("prepare_mt_runtime".to_string())
+                },
+            )
+        };
 
     Ok(RuntimeStatus {
         models_dir: models_dir.display().to_string(),
@@ -63,22 +102,10 @@ pub fn get_runtime_status() -> AppResult<RuntimeStatus> {
             action: Some("open_model_page".to_string()),
         },
         translation: RuntimeComponentStatus {
-            ready: loci_ready,
-            path: if loci_ready {
-                models_dir.join("loci").display().to_string()
-            } else {
-                models_dir.join("loci").display().to_string()
-            },
-            message: if loci_ready {
-                "Loci enhanced translation ready".to_string()
-            } else {
-                "Loci translation model not installed".to_string()
-            },
-            action: if loci_ready {
-                None
-            } else {
-                Some("download_loci_model".to_string())
-            },
+            ready: translation_ready,
+            path: translation_path,
+            message: translation_message,
+            action: translation_action,
         },
         vad: RuntimeComponentStatus {
             ready: tts_ready,

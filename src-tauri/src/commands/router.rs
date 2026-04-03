@@ -22,6 +22,14 @@ fn arg_usize(args: &Value, key: &str, default: usize) -> usize {
         .unwrap_or(default)
 }
 
+fn arg_opt_str(args: &Value, key: &str) -> Option<String> {
+    args.get(key)
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string)
+}
+
 pub fn execute_named(
     name: &str,
     args: Value,
@@ -60,16 +68,14 @@ pub fn execute_named(
                     super::session::SessionConfig {
                         source_lang: arg_str(&args, "source_lang")?.to_string(),
                         target_lang: arg_str(&args, "target_lang")?.to_string(),
-                        translation_engine: Some(
-                            args.get("translation_engine")
-                                .and_then(Value::as_str)
-                                .unwrap_or("nllb")
-                                .to_string(),
-                        ),
+                        translation_engine: arg_opt_str(&args, "translation_engine"),
                         input_device: None,
                         peer_input_device: None,
                         bidirectional: arg_bool(&args, "bidirectional", false),
-                        loci_enhanced: false,
+                        loci_enhanced: matches!(
+                            arg_opt_str(&args, "translation_engine").as_deref(),
+                            Some("loci")
+                        ),
                         vad_frame_ms: None,
                         vad_threshold: None,
                         stream_translation_interval_ms: None,
@@ -98,6 +104,7 @@ pub fn execute_named(
                     arg_str(&args, "source_lang")?.to_string(),
                     arg_str(&args, "target_lang")?.to_string(),
                     arg_bool(&args, "bidirectional", false),
+                    arg_opt_str(&args, "translation_engine"),
                     args.get("latency_profile")
                         .or_else(|| args.get("latencyProfile"))
                         .and_then(Value::as_str)
@@ -175,8 +182,9 @@ pub fn execute_named(
                 text: arg_str(&args, "text")?.to_string(),
                 source_lang: arg_str(&args, "source_lang")?.to_string(),
                 target_lang: arg_str(&args, "target_lang")?.to_string(),
-                engine: Some("nllb".to_string()),
-                model_path: None,
+                engine: arg_opt_str(&args, "engine")
+                    .or_else(|| arg_opt_str(&args, "translation_engine")),
+                model_path: arg_opt_str(&args, "model_path"),
             },
         )?)
         .map_err(|e| AppError::Io(e.to_string()))?),

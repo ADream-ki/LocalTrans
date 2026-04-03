@@ -50,6 +50,10 @@ Current work only refactors the Loci translation bridge:
 - The adapter now targets `loci-core`'s `InferenceEngine` API.
 - The adapter explicitly requests the `llama.cpp` backend so builds fail fast instead of silently falling back to the mock backend.
 
+The external engine reference matrix for the next migration stages lives in:
+
+- `docs/open-source-reference-matrix.md`
+
 ## Next migration steps
 
 1. Move `audio`, `asr`, `translation`, `tts`, and `pipeline` slices into shared crates.

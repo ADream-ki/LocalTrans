@@ -34,10 +34,10 @@ struct TranslationService {
 
 impl TranslationService {
     fn translate(&mut self, request: &TranslateRequest) -> anyhow::Result<TranslationResult> {
-        let engine = request.engine.as_deref().unwrap_or("nllb");
-        match engine {
+        let engine = resolved_translation_engine(request.engine.as_deref());
+        match engine.as_str() {
             "loci" => self.translate_loci(request),
-            "nllb" | "argos" => self
+            "nllb" => self
                 .nllb
                 .translate(&request.text, &request.source_lang, &request.target_lang),
             other => anyhow::bail!("Unsupported translation engine: {}", other),
@@ -45,11 +45,7 @@ impl TranslationService {
     }
 
     fn translate_loci(&mut self, request: &TranslateRequest) -> anyhow::Result<TranslationResult> {
-        let model_path = if let Some(p) = request.model_path.as_deref() {
-            Some(PathBuf::from(p))
-        } else {
-            find_default_loci_model()
-        };
+        let model_path = resolve_loci_model_path(request.model_path.as_deref());
 
         let Some(model_path) = model_path else {
             anyhow::bail!(
@@ -112,17 +108,38 @@ pub fn translate_text_cli(
     text: String,
     source_lang: String,
     target_lang: String,
+    engine: Option<String>,
+    model_path: Option<String>,
 ) -> AppResult<TranslateResponse> {
     translate_text(TranslateRequest {
         text,
         source_lang,
         target_lang,
-        engine: Some("nllb".to_string()),
-        model_path: None,
+        engine,
+        model_path,
     })
 }
 
-fn default_loci_dir() -> PathBuf {
+pub(crate) fn resolved_translation_engine(requested: Option<&str>) -> String {
+    let selected = requested
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string)
+        .or_else(|| super::config::get_string("translationEngine"))
+        .unwrap_or_else(|| "nllb".to_string());
+
+    match selected.to_ascii_lowercase().as_str() {
+        "loci" => "loci".to_string(),
+        "nllb" | "argos" | "mt" | "m2m" => "nllb".to_string(),
+        other => other.to_string(),
+    }
+}
+
+pub(crate) fn configured_loci_model_path() -> Option<PathBuf> {
+    super::config::get_string("lociModelPath").map(PathBuf::from)
+}
+
+pub(crate) fn default_loci_dir() -> PathBuf {
     dirs::data_local_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join("LocalTrans")
@@ -130,7 +147,7 @@ fn default_loci_dir() -> PathBuf {
         .join("loci")
 }
 
-fn find_default_loci_model() -> Option<PathBuf> {
+pub(crate) fn find_default_loci_model() -> Option<PathBuf> {
     let dir = default_loci_dir();
     let entries = std::fs::read_dir(&dir).ok()?;
     let mut best: Option<(u64, PathBuf)> = None;
@@ -151,4 +168,13 @@ fn find_default_loci_model() -> Option<PathBuf> {
         }
     }
     best.map(|(_, p)| p)
+}
+
+fn resolve_loci_model_path(requested: Option<&str>) -> Option<PathBuf> {
+    requested
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .or_else(configured_loci_model_path)
+        .or_else(find_default_loci_model)
 }

@@ -160,14 +160,16 @@ fn ensure_not_running() -> AppResult<()> {
 
 fn cfg_to_pipeline(config: SessionConfig) -> PipelineConfig {
     let latency_profile = config.latency_profile.clone();
+    let translation_engine =
+        super::translation::resolved_translation_engine(config.translation_engine.as_deref());
     let mut pipeline = PipelineConfig {
         source_lang: config.source_lang,
         target_lang: config.target_lang,
-        translation_engine: config.translation_engine.unwrap_or_else(|| "nllb".to_string()),
+        translation_engine: translation_engine.clone(),
         input_device: config.input_device,
         peer_input_device: config.peer_input_device,
         bidirectional: config.bidirectional,
-        loci_enhanced: config.loci_enhanced,
+        loci_enhanced: config.loci_enhanced || translation_engine == "loci",
         ..Default::default()
     };
     if let Some(profile) = latency_profile.as_deref().and_then(LatencyProfile::parse) {
@@ -312,11 +314,8 @@ pub fn start_session(app: AppHandle, config: SessionConfig) -> AppResult<()> {
             "ASR model is required before starting session".to_string(),
         ));
     }
-    let translation_engine = config
-        .translation_engine
-        .as_deref()
-        .unwrap_or("nllb")
-        .to_ascii_lowercase();
+    let translation_engine =
+        super::translation::resolved_translation_engine(config.translation_engine.as_deref());
     if translation_engine == "loci" && !super::model::has_ready_model("loci")? {
         return Err(AppError::InvalidState(
             "Loci translation model is required when translationEngine=loci".to_string(),
@@ -400,6 +399,7 @@ pub fn start_session_cli(
     source_lang: String,
     target_lang: String,
     bidirectional: bool,
+    _translation_engine: Option<String>,
     _latency_profile: Option<String>,
 ) -> AppResult<SessionStatus> {
     write_runtime_state("running", source_lang, target_lang, bidirectional);

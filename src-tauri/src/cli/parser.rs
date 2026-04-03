@@ -47,6 +47,8 @@ pub enum Commands {
         source_lang: String,
         #[arg(long, default_value = "zh")]
         target_lang: String,
+        #[arg(long)]
+        translation_engine: Option<String>,
         #[arg(long, default_value_t = false)]
         bidirectional: bool,
         #[arg(long, default_value = "balanced")]
@@ -79,6 +81,10 @@ pub enum Commands {
         source_lang: String,
         #[arg(long)]
         target_lang: String,
+        #[arg(long)]
+        engine: Option<String>,
+        #[arg(long)]
+        model_path: Option<PathBuf>,
     },
     LogStatus,
     MtRuntimeCheck,

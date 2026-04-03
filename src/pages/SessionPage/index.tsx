@@ -156,6 +156,7 @@ function SessionPage() {
     ttsAutoPlay,
     ttsOutputDevice,
     peerTtsOutputDevice,
+    translationEngine: settingsTranslationEngine,
     setTtsOutputDevice,
     setPeerTtsOutputDevice,
     streamTranslationIntervalMs,
@@ -219,6 +220,14 @@ function SessionPage() {
     setTranslationEngine("nllb");
     setSettingsTranslationEngine("nllb");
   }, [runtimeStatus?.lociUnhealthy, translationEngine, setTranslationEngine, setSettingsTranslationEngine]);
+
+  useEffect(() => {
+    if (isRunning) return;
+    const normalizedEngine = settingsTranslationEngine === "loci" ? "loci" : "nllb";
+    if (translationEngine !== normalizedEngine) {
+      setTranslationEngine(normalizedEngine);
+    }
+  }, [isRunning, settingsTranslationEngine, translationEngine, setTranslationEngine]);
 
   useEffect(() => {
     let cancelled = false;
