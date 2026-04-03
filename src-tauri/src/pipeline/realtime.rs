@@ -10,7 +10,6 @@ use anyhow::{Result, Context, anyhow};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
-use std::path::PathBuf;
 use tokio::sync::Mutex as AsyncMutex;
 use tokio::sync::mpsc;
 use parking_lot::Mutex as SyncMutex;
@@ -20,9 +19,11 @@ use uuid::Uuid;
 
 use crate::audio::AudioCapture;
 use crate::audio::resample_linear;
-use crate::asr::{AsrConfig, StreamingConfig, StreamingAsrEngine, StreamingResult};
-use crate::commands::tts::TtsRequest;
-use crate::translation::{LociTranslator, NllbTranslator, Translator};
+use crate::asr::{AsrConfig, StreamingConfig, StreamingResult};
+use crate::runtime_adapters::{
+    CommandTtsAdapter, DeterministicMtAdapter, LociMtAdapter, MtAdapter, RealtimeAsrAdapter,
+    StreamingAsrAdapter, TtsAdapter, TtsPlaybackRequest,
+};
 use super::events::{
     EventBroadcaster, HistoryManager, HistoryItem, PipelineEvent, PipelineState,
     ErrorCode, TranscriptionSegment, TranslationInfo,
@@ -243,11 +244,13 @@ pub struct RealtimePipeline {
     /// Peer audio capture component (for dual-route bidirectional mode)
     peer_audio_capture: Arc<AsyncMutex<Option<AudioCapture>>>,
     /// Streaming ASR engine
-    asr_engine: Arc<AsyncMutex<Option<StreamingAsrEngine>>>,
+    asr_engine: Arc<AsyncMutex<Option<Box<dyn RealtimeAsrAdapter>>>>,
     /// Peer streaming ASR engine
-    peer_asr_engine: Arc<AsyncMutex<Option<StreamingAsrEngine>>>,
-    /// Translator
-    translator: Arc<AsyncMutex<Box<dyn Translator>>>,
+    peer_asr_engine: Arc<AsyncMutex<Option<Box<dyn RealtimeAsrAdapter>>>>,
+    /// Translation adapter
+    translator: Arc<AsyncMutex<Box<dyn MtAdapter>>>,
+    /// TTS adapter
+    tts_adapter: Arc<Box<dyn TtsAdapter>>,
     /// Event broadcaster
     broadcaster: Arc<EventBroadcaster>,
     /// History manager
@@ -272,20 +275,20 @@ impl RealtimePipeline {
         let broadcaster = EventBroadcaster::new(app_handle);
         
         let engine = config.translation_engine.to_ascii_lowercase();
-        let translator: Box<dyn Translator> = match engine.as_str() {
+        let translator: Box<dyn MtAdapter> = match engine.as_str() {
             "loci" => {
                 if !config.loci_enhanced {
                     return Err(anyhow!(
                         "Loci translation requested but loci_enhanced is disabled"
                     ));
                 }
-                let model_path = find_default_loci_model().ok_or_else(|| {
+                let model_path = crate::loci_runtime::find_default_loci_model().ok_or_else(|| {
                     anyhow!(
                         "No Loci model found under {}",
-                        default_loci_dir().display()
+                        crate::loci_runtime::default_loci_dir().display()
                     )
                 })?;
-                let translator = LociTranslator::init(&model_path).map_err(|e| {
+                let translator = LociMtAdapter::new(model_path.clone()).map_err(|e| {
                     let _ = broadcaster.emit_error(
                         ErrorCode::TranslationModelNotLoaded,
                         format!(
@@ -302,11 +305,12 @@ impl RealtimePipeline {
                 })?;
                 Box::new(translator)
             }
-            "nllb" | "argos" | "mt" => Box::new(NllbTranslator::new()),
+            "nllb" | "argos" | "mt" => Box::new(DeterministicMtAdapter::new()),
             other => {
                 return Err(anyhow!("Unsupported translation engine: {}", other));
             }
         };
+        let tts_adapter: Arc<Box<dyn TtsAdapter>> = Arc::new(Box::new(CommandTtsAdapter::new()));
         
         let pipeline_id = Uuid::new_v4().to_string();
         tracing::info!(
@@ -328,6 +332,7 @@ impl RealtimePipeline {
             asr_engine: Arc::new(AsyncMutex::new(None)),
             peer_asr_engine: Arc::new(AsyncMutex::new(None)),
             translator: Arc::new(AsyncMutex::new(translator)),
+            tts_adapter,
             broadcaster: Arc::new(broadcaster),
             history: Arc::new(AsyncMutex::new(HistoryManager::new(max_history))),
             stats: Arc::new(SyncMutex::new(PipelineStats::default())),
@@ -405,8 +410,10 @@ impl RealtimePipeline {
         streaming_config.chunk_size = chunk_size.max(1);
         let asr_chunk_size = streaming_config.chunk_size;
         
-        let asr_engine = StreamingAsrEngine::new(asr_config, streaming_config)
-            .map_err(|e| anyhow!("Failed to initialize ASR engine: {}", e))?;
+        let asr_engine = Box::new(
+            StreamingAsrAdapter::new(asr_config, streaming_config)
+                .map_err(|e| anyhow!("Failed to initialize ASR engine: {}", e))?,
+        );
 
         tracing::info!(
             pipeline_id = %self.pipeline_id,
@@ -445,8 +452,10 @@ impl RealtimePipeline {
                 peer_streaming_config.max_speech_duration_ms =
                     (self.config.max_segment_duration_ms.min(u32::MAX as u64)) as u32;
                 peer_streaming_config.chunk_size = asr_chunk_size;
-                let peer_asr_engine = StreamingAsrEngine::new(peer_asr_config, peer_streaming_config)
-                    .map_err(|e| anyhow!("Failed to initialize peer ASR engine: {}", e))?;
+                let peer_asr_engine = Box::new(
+                    StreamingAsrAdapter::new(peer_asr_config, peer_streaming_config)
+                        .map_err(|e| anyhow!("Failed to initialize peer ASR engine: {}", e))?,
+                );
                 *self.peer_asr_engine.lock().await = Some(peer_asr_engine);
                 tracing::info!(
                     pipeline_id = %self.pipeline_id,
@@ -481,6 +490,7 @@ impl RealtimePipeline {
         let asr_engine = self.asr_engine.clone();
         let peer_asr_engine = self.peer_asr_engine.clone();
         let translator = self.translator.clone();
+        let tts_adapter = self.tts_adapter.clone();
         let broadcaster = self.broadcaster.clone();
         let history = self.history.clone();
         let stats = self.stats.clone();
@@ -624,7 +634,11 @@ impl RealtimePipeline {
                                                 >= Duration::from_millis(config.stream_tts_interval_ms)
                                             && translation.text.trim() != last_tts_text
                                         {
-                                            spawn_pipeline_tts(&config, translation.text.clone());
+                                            spawn_pipeline_tts(
+                                                tts_adapter.clone(),
+                                                &config,
+                                                translation.text.clone(),
+                                            );
                                             last_stream_tts_emit = Instant::now();
                                             last_tts_text = translation.text.trim().to_string();
                                         }
@@ -762,7 +776,11 @@ impl RealtimePipeline {
                                         && !translation.text.trim().is_empty()
                                         && translation.text.trim() != last_tts_text
                                     {
-                                        spawn_pipeline_tts(&config, translation.text.clone());
+                                        spawn_pipeline_tts(
+                                            tts_adapter.clone(),
+                                            &config,
+                                            translation.text.clone(),
+                                        );
                                         last_tts_text = translation.text.trim().to_string();
                                     }
                                     }
@@ -1070,55 +1088,23 @@ impl RealtimePipeline {
     }
 }
 
-fn default_loci_dir() -> PathBuf {
-    dirs::data_local_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join("LocalTrans")
-        .join("models")
-        .join("loci")
-}
-
-fn find_default_loci_model() -> Option<PathBuf> {
-    let dir = default_loci_dir();
-    let entries = std::fs::read_dir(&dir).ok()?;
-
-    let mut best: Option<(u64, PathBuf)> = None;
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path
-            .extension()
-            .and_then(|e| e.to_str())
-            .map(|e| e.eq_ignore_ascii_case("gguf"))
-            != Some(true)
-        {
-            continue;
-        }
-
-        let size = entry.metadata().ok().map(|m| m.len()).unwrap_or(0);
-        match &best {
-            Some((best_size, _)) if *best_size >= size => {}
-            _ => best = Some((size, path)),
-        }
-    }
-
-    best.map(|(_, p)| p)
-}
-
-fn spawn_pipeline_tts(config: &PipelineConfig, text: String) {
-    let request = TtsRequest {
+fn spawn_pipeline_tts(
+    tts_adapter: Arc<Box<dyn TtsAdapter>>,
+    config: &PipelineConfig,
+    text: String,
+) {
+    let request = TtsPlaybackRequest {
         text,
         voice: config.tts_voice.clone(),
         engine: Some(config.tts_engine.clone()),
         rate: config.tts_rate,
-        pitch: Some(0.0),
         volume: Some(config.tts_volume),
         output_device: config.tts_output_device.clone(),
-        custom_voice: None,
         custom_voice_profile_id: config.custom_voice_profile_id.clone(),
     };
 
     tokio::task::spawn_blocking(move || {
-        if let Err(e) = crate::commands::tts::speak_text(request) {
+        if let Err(e) = tts_adapter.speak(request) {
             tracing::warn!("pipeline tts playback failed: {}", e);
         }
     });

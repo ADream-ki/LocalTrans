@@ -4,6 +4,7 @@ pub mod ipc;
 pub mod audio;
 pub mod asr;
 pub mod loci_runtime;
+pub mod runtime_adapters;
 pub mod translation;
 pub mod tts;
 pub mod pipeline;
