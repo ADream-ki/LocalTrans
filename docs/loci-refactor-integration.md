@@ -87,6 +87,8 @@ localtrans.exe call --name activate_loci_rewriter --args-json "{\"component\":\"
 
 The dedicated CLI commands are the preferred operational surface for Loci governance now that `LocalTrans` treats `Loci-refactor` as the core plugin-governed runtime.
 
+`LocalTrans` now also ships a built-in manifest-first workflow bundle at `src-tauri/resources/loci-plugins/localtrans-speech-workflow`, and the Tauri bundle includes that resource directory. In a default `translationEngine=loci` setup, this gives the product an out-of-box workflow governance baseline even before the user adds external plugin directories.
+
 ## Shared config keys
 
 The host runtime reads these keys from `.localtrans-config.json`:

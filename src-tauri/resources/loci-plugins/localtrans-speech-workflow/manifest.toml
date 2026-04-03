@@ -1,0 +1,21 @@
+name = "localtrans-speech-workflow"
+version = "0.1.0"
+api_version = "1.0"
+target_tracks = ["ai_infra"]
+
+[contributes]
+workflows = [
+  "speech.translate.realtime",
+  "speech.asr.whisper",
+  "speech.tts.sherpa-melo",
+  "speech.latency.balanced",
+  "speech.tts.autoplay",
+  "speech.mode.unidirectional"
+]
+commands = ["localtrans:session-governance"]
+
+[core_rewriters]
+workflow = true
+
+[bootstrap]
+activate_on_load = ["workflow"]

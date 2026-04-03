@@ -88,7 +88,7 @@ pub fn resolve_loci_model_path(requested: Option<&str>) -> Option<PathBuf> {
 }
 
 #[cfg(feature = "loci-backend")]
-fn configured_plugin_dirs() -> Vec<PathBuf> {
+fn config_plugin_dirs() -> Vec<PathBuf> {
     let Some(value) = crate::commands::config::get_value("lociPluginDirs") else {
         return Vec::new();
     };
@@ -108,6 +108,53 @@ fn configured_plugin_dirs() -> Vec<PathBuf> {
             .collect(),
         _ => Vec::new(),
     }
+}
+
+#[cfg(feature = "loci-backend")]
+fn builtin_plugin_dirs() -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+
+    if let Ok(cwd) = std::env::current_dir() {
+        candidates.push(cwd.join("src-tauri").join("resources").join("loci-plugins"));
+        candidates.push(cwd.join("resources").join("loci-plugins"));
+    }
+
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            candidates.push(dir.join("resources").join("loci-plugins"));
+            candidates.push(dir.join("loci-plugins"));
+        }
+    }
+
+    candidates.push(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("resources")
+            .join("loci-plugins"),
+    );
+
+    let mut deduped = Vec::new();
+    for candidate in candidates {
+        if !candidate.exists() {
+            continue;
+        }
+        if deduped.iter().any(|existing: &PathBuf| existing == &candidate) {
+            continue;
+        }
+        deduped.push(candidate);
+    }
+    deduped
+}
+
+#[cfg(feature = "loci-backend")]
+pub fn configured_plugin_dirs() -> Vec<PathBuf> {
+    let mut merged = builtin_plugin_dirs();
+    for plugin_dir in config_plugin_dirs() {
+        if merged.iter().any(|existing| existing == &plugin_dir) {
+            continue;
+        }
+        merged.push(plugin_dir);
+    }
+    merged
 }
 
 #[cfg(feature = "loci-backend")]

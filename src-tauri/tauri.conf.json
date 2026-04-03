@@ -28,7 +28,8 @@
     "active": true,
     "targets": "all",
     "resources": [
-      "resources/mt-runtime"
+      "resources/mt-runtime",
+      "resources/loci-plugins"
     ],
     "icon": [
       "icons/32x32.png",

@@ -957,7 +957,7 @@ function SettingsPage() {
                 placeholder={"每行一个目录，例如：\nD:\\plugins\\loci\nD:\\Code\\team-plugins"}
               />
               <p className="text-xs text-text-tertiary mt-xs">
-                会写入 `lociPluginDirs`，用于启动时递归发现 manifest-first 插件包。
+                会写入 `lociPluginDirs`，用于启动时递归发现 manifest-first 插件包。留空时仍会加载应用内置的 `localtrans-speech-workflow`。
               </p>
             </div>
 

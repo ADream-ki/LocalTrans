@@ -100,23 +100,34 @@ pub struct LociGovernanceSnapshot {
 pub type LociWorkflowPolicySnapshot = crate::runtime_governance::LociWorkflowPolicySnapshot;
 
 fn configured_plugin_dirs_snapshot() -> Vec<String> {
-    let Some(value) = crate::commands::config::get_value("lociPluginDirs") else {
-        return Vec::new();
-    };
-
-    match value {
-        serde_json::Value::Array(items) => items
+    #[cfg(feature = "loci-backend")]
+    {
+        return crate::loci_runtime::configured_plugin_dirs()
             .into_iter()
-            .filter_map(|item| item.as_str().map(str::trim).map(ToString::to_string))
-            .filter(|item| !item.is_empty())
-            .collect(),
-        serde_json::Value::String(raw) => raw
-            .split(['\n', ';'])
-            .map(str::trim)
-            .filter(|item| !item.is_empty())
-            .map(ToString::to_string)
-            .collect(),
-        _ => Vec::new(),
+            .map(|path| path.display().to_string())
+            .collect();
+    }
+
+    #[cfg(not(feature = "loci-backend"))]
+    {
+        let Some(value) = crate::commands::config::get_value("lociPluginDirs") else {
+            return Vec::new();
+        };
+
+        match value {
+            serde_json::Value::Array(items) => items
+                .into_iter()
+                .filter_map(|item| item.as_str().map(str::trim).map(ToString::to_string))
+                .filter(|item| !item.is_empty())
+                .collect(),
+            serde_json::Value::String(raw) => raw
+                .split(['\n', ';'])
+                .map(str::trim)
+                .filter(|item| !item.is_empty())
+                .map(ToString::to_string)
+                .collect(),
+            _ => Vec::new(),
+        }
     }
 }
 
