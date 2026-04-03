@@ -1,6 +1,7 @@
 pub mod audio;
 pub mod config;
 pub mod hello;
+pub mod loci_runtime;
 pub mod model;
 pub mod process_file;
 pub mod router;

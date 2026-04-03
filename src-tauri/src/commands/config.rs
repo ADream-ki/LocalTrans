@@ -36,6 +36,11 @@ pub(crate) fn get_string(key: &str) -> Option<String> {
         .filter(|value| !value.trim().is_empty())
 }
 
+#[cfg_attr(not(feature = "loci-backend"), allow(dead_code))]
+pub(crate) fn get_value(key: &str) -> Option<Value> {
+    load_map().ok().and_then(|map| map.get(key).cloned())
+}
+
 #[tauri::command(rename_all = "snake_case")]
 pub fn set_app_config(config: Value) -> AppResult<()> {
     let map = match config {

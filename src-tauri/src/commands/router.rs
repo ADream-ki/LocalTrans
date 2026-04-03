@@ -189,6 +189,43 @@ pub fn execute_named(
         )?)
         .map_err(|e| AppError::Io(e.to_string()))?),
 
+        "get_loci_runtime_snapshot" => Ok(
+            serde_json::to_value(super::loci_runtime::get_loci_runtime_snapshot(Some(
+                super::loci_runtime::LociSnapshotRequest {
+                    model_path: arg_opt_str(&args, "model_path"),
+                },
+            ))?)
+            .map_err(|e| AppError::Io(e.to_string()))?,
+        ),
+        "get_loci_rewriter_inventory" => Ok(
+            serde_json::to_value(super::loci_runtime::get_loci_rewriter_inventory(Some(
+                super::loci_runtime::LociSnapshotRequest {
+                    model_path: arg_opt_str(&args, "model_path"),
+                },
+            ))?)
+            .map_err(|e| AppError::Io(e.to_string()))?,
+        ),
+        "load_loci_plugins" => Ok(
+            serde_json::to_value(super::loci_runtime::load_loci_plugins(
+                super::loci_runtime::LoadLociPluginsRequest {
+                    model_path: arg_opt_str(&args, "model_path"),
+                    path: arg_str(&args, "path")?.to_string(),
+                    source_kind: arg_opt_str(&args, "source_kind"),
+                },
+            )?)
+            .map_err(|e| AppError::Io(e.to_string()))?,
+        ),
+        "activate_loci_rewriter" => Ok(
+            serde_json::to_value(super::loci_runtime::activate_loci_rewriter(
+                super::loci_runtime::ActivateLociRewriterRequest {
+                    model_path: arg_opt_str(&args, "model_path"),
+                    component: arg_str(&args, "component")?.to_string(),
+                    plugin_name: arg_str(&args, "plugin_name")?.to_string(),
+                },
+            )?)
+            .map_err(|e| AppError::Io(e.to_string()))?,
+        ),
+
         "get_runtime_status" => Ok(serde_json::to_value(super::system::get_runtime_status()?)
             .map_err(|e| AppError::Io(e.to_string()))?),
         "get_log_status" => Ok(serde_json::to_value(super::system::get_log_status()?)

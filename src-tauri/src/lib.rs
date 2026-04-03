@@ -3,6 +3,7 @@ pub mod error;
 pub mod ipc;
 pub mod audio;
 pub mod asr;
+pub mod loci_runtime;
 pub mod translation;
 pub mod tts;
 pub mod pipeline;
@@ -46,6 +47,10 @@ pub fn run() -> Result<(), tauri::Error> {
             commands::system::get_log_status,
             commands::system::check_mt_runtime,
             commands::system::open_url,
+            commands::loci_runtime::get_loci_runtime_snapshot,
+            commands::loci_runtime::get_loci_rewriter_inventory,
+            commands::loci_runtime::load_loci_plugins,
+            commands::loci_runtime::activate_loci_rewriter,
             commands::tts::get_tts_voices,
             commands::tts::speak_text,
             commands::tts::stop_tts,

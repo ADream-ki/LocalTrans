@@ -49,6 +49,46 @@ Current work only refactors the Loci translation bridge:
 - `LocalTrans` uses `LociTranslator` as the adapter.
 - The adapter now targets `loci-core`'s `InferenceEngine` API.
 - The adapter explicitly requests the `llama.cpp` backend so builds fail fast instead of silently falling back to the mock backend.
+- `LocalTrans` now exposes a plugin-governed Loci runtime facade instead of treating Loci as a direct one-off inference call.
+
+## Plugin-governed runtime
+
+The host now has backend commands for the Loci runtime:
+
+- `get_loci_runtime_snapshot`
+- `get_loci_rewriter_inventory`
+- `load_loci_plugins`
+- `activate_loci_rewriter`
+
+These can be reached from:
+
+- Tauri invoke commands
+- the existing CLI bridge via `localtrans.exe call --name ...`
+
+Example:
+
+```powershell
+localtrans.exe call --name get_loci_runtime_snapshot --args-json "{}"
+localtrans.exe call --name load_loci_plugins --args-json "{\"path\":\"D:\\\\plugins\\\\loci\",\"source_kind\":\"directory\"}"
+localtrans.exe call --name activate_loci_rewriter --args-json "{\"component\":\"inference\",\"plugin_name\":\"my-inference-plugin\"}"
+```
+
+## Shared config keys
+
+The host runtime reads these keys from `.localtrans-config.json`:
+
+- `translationEngine`
+- `lociModelPath`
+- `lociPluginDirs`
+- `lociInferencePlugin`
+- `lociModelPlugin`
+- `lociHardwarePlugin`
+- `lociWorkflowPlugin`
+- `lociEventBusPlugin`
+- `lociPluginManagerPlugin`
+- `lociUiHostPlugin`
+
+This keeps the runtime aligned with the `Loci-refactor` design where inference, model, hardware, workflow, event bus, plugin manager, and UI host are all governed seams.
 
 The external engine reference matrix for the next migration stages lives in:
 

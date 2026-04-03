@@ -8,12 +8,12 @@ use std::time::{Duration, Instant};
 use anyhow::Context;
 
 #[cfg(feature = "loci-backend")]
-use loci::{GenerationParams, InferenceEngine};
+use loci::{GenerationParams, ManagementService, TextGenerationParams, TextGenerationRequest};
 
 /// Loci-based translator that uses local LLM for translation
 pub struct LociTranslator {
     #[cfg(feature = "loci-backend")]
-    engine: Option<InferenceEngine>,
+    runtime: Option<ManagementService>,
     model_path: Option<String>,
     initialized: bool,
     consecutive_failures: u32,
@@ -24,7 +24,7 @@ impl LociTranslator {
     pub fn new() -> Self {
         Self {
             #[cfg(feature = "loci-backend")]
-            engine: None,
+            runtime: None,
             model_path: None,
             initialized: false,
             consecutive_failures: 0,
@@ -260,16 +260,15 @@ impl Translator for LociTranslator {
                 anyhow::bail!("Loci model not found: {}", model_path.display());
             }
 
-            let engine = InferenceEngine::builder()
-                .with_backend_name("llama.cpp")
-                .with_model_path(model_path.to_str().context("Invalid model path")?)
-                .build()
-                .context("Failed to initialize Loci engine")?;
+            let runtime =
+                crate::loci_runtime::ensure_management_service(model_path).context(
+                    "Failed to initialize plugin-governed Loci runtime",
+                )?;
 
-            tracing::info!("Loci engine initialized successfully");
+            tracing::info!("Loci runtime initialized successfully");
 
             Ok(Self {
-                engine: Some(engine),
+                runtime: Some(runtime),
                 model_path: Some(model_path.to_string_lossy().to_string()),
                 initialized: true,
                 consecutive_failures: 0,
@@ -297,7 +296,7 @@ impl Translator for LociTranslator {
                     anyhow::bail!("Loci circuit breaker is open due to repeated failures");
                 }
             }
-            if let Some(ref mut engine) = self.engine {
+            if let Some(ref runtime) = self.runtime {
                 let prompt = Self::build_translation_prompt(text, source_lang, target_lang);
 
                 let mut params = GenerationParams {
@@ -310,8 +309,22 @@ impl Translator for LociTranslator {
                 };
 
                 for attempt in 0..2 {
-                    match engine.generate_legacy(&prompt, params.clone()) {
-                        Ok(result) => {
+                    let request = TextGenerationRequest {
+                        prompt: prompt.clone(),
+                        params: TextGenerationParams {
+                            max_tokens: params.max_tokens,
+                            temperature: params.temperature,
+                            top_p: params.top_p,
+                            min_p: params.min_p,
+                            top_k: params.top_k,
+                            repeat_penalty: params.repeat_penalty,
+                            ..Default::default()
+                        },
+                    };
+
+                    match runtime.generate_text(request) {
+                        Ok(response) => {
+                            let result = response.output;
                             let translated =
                                 Self::clean_translation_output(&result, text, target_lang);
                             let src_norm = Self::normalize_for_compare(text);
