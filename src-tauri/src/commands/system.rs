@@ -4,6 +4,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::error::AppResult;
+use crate::runtime_adapters::RuntimeAdapterInventory;
 
 #[derive(Debug, Serialize)]
 pub struct RuntimeComponentStatus {
@@ -11,6 +12,7 @@ pub struct RuntimeComponentStatus {
     pub path: String,
     pub message: String,
     pub action: Option<String>,
+    pub engine: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -19,6 +21,7 @@ pub struct RuntimeStatus {
     pub asr: RuntimeComponentStatus,
     pub translation: RuntimeComponentStatus,
     pub vad: RuntimeComponentStatus,
+    pub tts_engine: String,
     pub loci_unhealthy: bool,
     pub loci_unhealthy_remaining_sec: u32,
 }
@@ -44,12 +47,26 @@ pub struct MtRuntimeCheck {
 }
 
 #[tauri::command]
+pub fn get_runtime_adapter_inventory() -> AppResult<RuntimeAdapterInventory> {
+    let asr_engine = super::session::resolved_asr_engine(None);
+    let translation_engine = super::translation::resolved_translation_engine(None);
+    let tts_engine = super::session::resolved_tts_engine(None);
+    Ok(crate::runtime_adapters::runtime_adapter_inventory(
+        &asr_engine,
+        &translation_engine,
+        &tts_engine,
+    ))
+}
+
+#[tauri::command]
 pub fn get_runtime_status() -> AppResult<RuntimeStatus> {
     let models_dir = super::model::models_dir()?;
     let asr_ready = super::model::has_ready_model("asr")?;
     let loci_ready = super::model::has_ready_model("loci")?;
     let tts_ready = super::model::has_ready_model("tts")?;
+    let asr_engine = super::session::resolved_asr_engine(None);
     let translation_engine = super::translation::resolved_translation_engine(None);
+    let tts_engine = super::session::resolved_tts_engine(None);
     let mt_ready = check_mt_runtime()?.ready;
     let (translation_ready, translation_path, translation_message, translation_action) =
         if translation_engine == "loci" {
@@ -100,12 +117,14 @@ pub fn get_runtime_status() -> AppResult<RuntimeStatus> {
                 "ASR model not installed".to_string()
             },
             action: Some("open_model_page".to_string()),
+            engine: Some(asr_engine),
         },
         translation: RuntimeComponentStatus {
             ready: translation_ready,
             path: translation_path,
             message: translation_message,
             action: translation_action,
+            engine: Some(translation_engine),
         },
         vad: RuntimeComponentStatus {
             ready: tts_ready,
@@ -116,7 +135,9 @@ pub fn get_runtime_status() -> AppResult<RuntimeStatus> {
                 "Optional VAD model not installed".to_string()
             },
             action: Some("download_optional_vad".to_string()),
+            engine: None,
         },
+        tts_engine,
         loci_unhealthy: false,
         loci_unhealthy_remaining_sec: 0,
     })

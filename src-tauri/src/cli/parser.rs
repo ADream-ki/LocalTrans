@@ -48,12 +48,17 @@ pub enum Commands {
         #[arg(long, default_value = "zh")]
         target_lang: String,
         #[arg(long)]
+        asr_engine: Option<String>,
+        #[arg(long)]
         translation_engine: Option<String>,
+        #[arg(long)]
+        tts_engine: Option<String>,
         #[arg(long, default_value_t = false)]
         bidirectional: bool,
         #[arg(long, default_value = "balanced")]
         latency_profile: String,
     },
+    RuntimeAdapters,
     SessionPause,
     SessionResume,
     SessionStop,

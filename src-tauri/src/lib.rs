@@ -45,6 +45,7 @@ pub fn run() -> Result<(), tauri::Error> {
             commands::config::set_config_value,
             commands::config::get_config_value,
             commands::system::get_runtime_status,
+            commands::system::get_runtime_adapter_inventory,
             commands::system::get_log_status,
             commands::system::check_mt_runtime,
             commands::system::open_url,

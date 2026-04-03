@@ -224,7 +224,7 @@ fn cfg_to_pipeline(config: SessionConfig) -> PipelineConfig {
     pipeline
 }
 
-fn resolved_asr_engine(requested: Option<&str>) -> String {
+pub(crate) fn resolved_asr_engine(requested: Option<&str>) -> String {
     requested
         .map(str::trim)
         .filter(|value| !value.is_empty())
@@ -233,7 +233,7 @@ fn resolved_asr_engine(requested: Option<&str>) -> String {
         .unwrap_or_else(|| "whisper".to_string())
 }
 
-fn resolved_tts_engine(requested: Option<&str>) -> String {
+pub(crate) fn resolved_tts_engine(requested: Option<&str>) -> String {
     requested
         .map(str::trim)
         .filter(|value| !value.is_empty())
@@ -435,7 +435,9 @@ pub fn start_session_cli(
     source_lang: String,
     target_lang: String,
     bidirectional: bool,
+    _asr_engine: Option<String>,
     _translation_engine: Option<String>,
+    _tts_engine: Option<String>,
     _latency_profile: Option<String>,
 ) -> AppResult<SessionStatus> {
     write_runtime_state("running", source_lang, target_lang, bidirectional);

@@ -1,4 +1,5 @@
 use anyhow::{anyhow, Context, Result};
+use serde::Serialize;
 use std::path::PathBuf;
 
 use crate::asr::{AsrConfig, StreamingAsrEngine, StreamingConfig, StreamingResult};
@@ -35,6 +36,25 @@ pub struct TtsPlaybackRequest {
 pub trait TtsAdapter: Send + Sync {
     fn adapter_name(&self) -> &'static str;
     fn speak(&self, request: TtsPlaybackRequest) -> Result<()>;
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RuntimeAdapterDescriptor {
+    pub id: String,
+    pub stage: String,
+    pub label: String,
+    pub available: bool,
+    pub selected: bool,
+    pub detail: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RuntimeAdapterInventory {
+    pub asr: Vec<RuntimeAdapterDescriptor>,
+    pub translation: Vec<RuntimeAdapterDescriptor>,
+    pub tts: Vec<RuntimeAdapterDescriptor>,
 }
 
 pub struct StreamingAsrAdapter {
@@ -229,5 +249,140 @@ pub fn create_tts_adapter(engine: &str) -> Result<Box<dyn TtsAdapter>> {
         }
         "qwen3-tts" => Ok(Box::new(QwenTtsAdapter::new()?)),
         other => Err(anyhow!("Unsupported TTS engine: {other}")),
+    }
+}
+
+pub fn runtime_adapter_inventory(
+    selected_asr: &str,
+    selected_translation: &str,
+    selected_tts: &str,
+) -> RuntimeAdapterInventory {
+    let selected_asr = selected_asr.trim().to_ascii_lowercase();
+    let selected_translation = selected_translation.trim().to_ascii_lowercase();
+    let selected_tts = selected_tts.trim().to_ascii_lowercase();
+
+    RuntimeAdapterInventory {
+        asr: vec![
+            RuntimeAdapterDescriptor {
+                id: "whisper".to_string(),
+                stage: "asr".to_string(),
+                label: "Whisper compatibility route".to_string(),
+                available: true,
+                selected: selected_asr == "whisper",
+                detail: "Currently mapped onto the existing local streaming ASR runtime.".to_string(),
+            },
+            RuntimeAdapterDescriptor {
+                id: "sensevoice".to_string(),
+                stage: "asr".to_string(),
+                label: "SenseVoice compatibility route".to_string(),
+                available: true,
+                selected: selected_asr == "sensevoice",
+                detail: "Currently mapped onto the existing local streaming ASR runtime.".to_string(),
+            },
+            RuntimeAdapterDescriptor {
+                id: "vosk".to_string(),
+                stage: "asr".to_string(),
+                label: "Vosk compatibility route".to_string(),
+                available: true,
+                selected: selected_asr == "vosk",
+                detail: "Currently mapped onto the existing local streaming ASR runtime.".to_string(),
+            },
+            RuntimeAdapterDescriptor {
+                id: "qwen3-asr".to_string(),
+                stage: "asr".to_string(),
+                label: "Qwen3-ASR scaffold".to_string(),
+                available: false,
+                selected: selected_asr == "qwen3-asr",
+                detail: "Adapter slot exists, but this build does not yet include qwen3-asr-rs or an equivalent plugin-backed implementation.".to_string(),
+            },
+        ],
+        translation: vec![
+            RuntimeAdapterDescriptor {
+                id: "loci".to_string(),
+                stage: "translation".to_string(),
+                label: "Loci plugin-governed MT".to_string(),
+                available: cfg!(feature = "loci-backend"),
+                selected: selected_translation == "loci",
+                detail: if cfg!(feature = "loci-backend") {
+                    "Backed by loci-core via the plugin-governed runtime facade.".to_string()
+                } else {
+                    "Requires the loci-backend feature in this build.".to_string()
+                },
+            },
+            RuntimeAdapterDescriptor {
+                id: "nllb".to_string(),
+                stage: "translation".to_string(),
+                label: "Deterministic MT runtime".to_string(),
+                available: true,
+                selected: selected_translation == "nllb",
+                detail: "Current deterministic translation adapter.".to_string(),
+            },
+            RuntimeAdapterDescriptor {
+                id: "argos".to_string(),
+                stage: "translation".to_string(),
+                label: "Argos compatibility route".to_string(),
+                available: true,
+                selected: selected_translation == "argos",
+                detail: "Normalized onto the deterministic MT adapter.".to_string(),
+            },
+            RuntimeAdapterDescriptor {
+                id: "m2m".to_string(),
+                stage: "translation".to_string(),
+                label: "M2M compatibility route".to_string(),
+                available: true,
+                selected: selected_translation == "m2m",
+                detail: "Normalized onto the deterministic MT adapter.".to_string(),
+            },
+        ],
+        tts: vec![
+            RuntimeAdapterDescriptor {
+                id: "sherpa-melo".to_string(),
+                stage: "tts".to_string(),
+                label: "Command TTS route: Sherpa Melo".to_string(),
+                available: true,
+                selected: selected_tts == "sherpa-melo",
+                detail: "Handled by the host-side TTS command adapter.".to_string(),
+            },
+            RuntimeAdapterDescriptor {
+                id: "edge-tts".to_string(),
+                stage: "tts".to_string(),
+                label: "Command TTS route: Edge TTS".to_string(),
+                available: true,
+                selected: selected_tts == "edge-tts",
+                detail: "Handled by the host-side TTS command adapter.".to_string(),
+            },
+            RuntimeAdapterDescriptor {
+                id: "custom".to_string(),
+                stage: "tts".to_string(),
+                label: "Command TTS route: Custom voice".to_string(),
+                available: true,
+                selected: selected_tts == "custom",
+                detail: "Handled by the host-side TTS command adapter using custom voice profiles.".to_string(),
+            },
+            RuntimeAdapterDescriptor {
+                id: "piper".to_string(),
+                stage: "tts".to_string(),
+                label: "Command TTS route: Piper".to_string(),
+                available: true,
+                selected: selected_tts == "piper",
+                detail: "Handled by the host-side TTS command adapter.".to_string(),
+            },
+            RuntimeAdapterDescriptor {
+                id: "system".to_string(),
+                stage: "tts".to_string(),
+                label: "Command TTS route: System voice".to_string(),
+                available: true,
+                selected: selected_tts == "system",
+                detail: "Handled by the host-side TTS command adapter.".to_string(),
+            },
+            RuntimeAdapterDescriptor {
+                id: "qwen3-tts".to_string(),
+                stage: "tts".to_string(),
+                label: "Qwen3-TTS scaffold".to_string(),
+                available: false,
+                selected: selected_tts == "qwen3-tts",
+                detail: "Adapter slot exists, but this build does not yet include qwen3-tts-rs or an equivalent plugin-backed implementation.".to_string(),
+            },
+        ],
     }
 }

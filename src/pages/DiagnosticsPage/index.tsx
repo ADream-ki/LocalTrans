@@ -26,6 +26,7 @@ interface RuntimeComponentStatus {
   path: string;
   message: string;
   action?: string | null;
+  engine?: string | null;
 }
 
 interface RuntimeStatus {
@@ -33,6 +34,22 @@ interface RuntimeStatus {
   asr: RuntimeComponentStatus;
   translation: RuntimeComponentStatus;
   vad: RuntimeComponentStatus;
+  ttsEngine: string;
+}
+
+interface RuntimeAdapterDescriptor {
+  id: string;
+  stage: string;
+  label: string;
+  available: boolean;
+  selected: boolean;
+  detail: string;
+}
+
+interface RuntimeAdapterInventory {
+  asr: RuntimeAdapterDescriptor[];
+  translation: RuntimeAdapterDescriptor[];
+  tts: RuntimeAdapterDescriptor[];
 }
 
 interface TtsSystemDoctorPlaybackResult {
@@ -79,6 +96,10 @@ function DiagnosticsPage() {
       }>("check_virtual_audio_driver");
 
       const runtime = await invoke<RuntimeStatus>("get_runtime_status");
+      const adapterInventory = await invoke<RuntimeAdapterInventory>("get_runtime_adapter_inventory");
+      const selectedAsrAdapter = adapterInventory.asr.find((item) => item.selected);
+      const selectedTranslationAdapter = adapterInventory.translation.find((item) => item.selected);
+      const selectedTtsAdapter = adapterInventory.tts.find((item) => item.selected);
 
       setDiagnostics([
         {
@@ -91,10 +112,50 @@ function DiagnosticsPage() {
           ],
         },
         {
+          title: "运行时路由",
+          icon: <Cpu size={18} className="text-primary" />,
+          items: [
+            {
+              key: "ASR 引擎选择",
+              value: runtime.asr.engine || "-",
+              status: selectedAsrAdapter?.available ? "ok" : "warning",
+            },
+            {
+              key: "ASR Adapter",
+              value: selectedAsrAdapter?.label || "-",
+              status: selectedAsrAdapter?.available ? "ok" : "warning",
+            },
+            {
+              key: "翻译引擎选择",
+              value: runtime.translation.engine || "-",
+              status: selectedTranslationAdapter?.available ? "ok" : "warning",
+            },
+            {
+              key: "翻译 Adapter",
+              value: selectedTranslationAdapter?.label || "-",
+              status: selectedTranslationAdapter?.available ? "ok" : "warning",
+            },
+            {
+              key: "TTS 引擎选择",
+              value: runtime.ttsEngine || "-",
+              status: selectedTtsAdapter?.available ? "ok" : "warning",
+            },
+            {
+              key: "TTS Adapter",
+              value: selectedTtsAdapter?.label || "-",
+              status: selectedTtsAdapter?.available ? "ok" : "warning",
+            },
+          ],
+        },
+        {
           title: "翻译引擎",
           icon: <Cpu size={18} className="text-primary" />,
           items: [
-            { key: "引擎类型", value: "Loci (本地)", status: "ok" },
+            {
+              key: "引擎类型",
+              value: runtime.translation.engine || "nllb",
+              status: selectedTranslationAdapter?.available ? "ok" : "warning",
+            },
             {
               key: "模型状态",
               value: runtime.translation.ready ? "已就绪" : "未就绪",
@@ -110,9 +171,14 @@ function DiagnosticsPage() {
             {
               key: "ASR",
               value: runtime.asr.ready ? "已就绪" : "未就绪",
-              status: runtime.asr.ready ? "ok" : "error",
+              status: runtime.asr.ready ? "ok" : selectedAsrAdapter?.available ? "error" : "warning",
             },
             { key: "ASR 路径", value: runtime.asr.path || "-", status: runtime.asr.ready ? "ok" : "error" },
+            {
+              key: "ASR Adapter 说明",
+              value: selectedAsrAdapter?.detail || "-",
+              status: selectedAsrAdapter?.available ? "ok" : "warning",
+            },
             {
               key: "Silero VAD (可选)",
               value: runtime.vad.ready ? "已就绪" : "未安装",
@@ -135,6 +201,11 @@ function DiagnosticsPage() {
               key: "检测到的设备", 
               value: virtualDriver.detected_drivers.map(d => d.name).join(", ") || "无",
               status: virtualDriver.has_virtual_driver ? "ok" : undefined
+            },
+            {
+              key: "TTS Adapter 说明",
+              value: selectedTtsAdapter?.detail || "-",
+              status: selectedTtsAdapter?.available ? "ok" : "warning",
             },
           ],
         },

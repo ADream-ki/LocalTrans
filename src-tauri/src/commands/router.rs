@@ -86,7 +86,7 @@ pub fn execute_named(name: &str, args: Value, app: Option<AppHandle>) -> AppResu
                             .map(ToString::to_string),
                         tts_enabled: None,
                         tts_auto_play: None,
-                        tts_engine: None,
+                        tts_engine: arg_opt_str(&args, "tts_engine"),
                         tts_voice: None,
                         tts_rate: None,
                         tts_volume: None,
@@ -103,7 +103,9 @@ pub fn execute_named(name: &str, args: Value, app: Option<AppHandle>) -> AppResu
                     arg_str(&args, "source_lang")?.to_string(),
                     arg_str(&args, "target_lang")?.to_string(),
                     arg_bool(&args, "bidirectional", false),
+                    arg_opt_str(&args, "asr_engine"),
                     arg_opt_str(&args, "translation_engine"),
+                    arg_opt_str(&args, "tts_engine"),
                     args.get("latency_profile")
                         .or_else(|| args.get("latencyProfile"))
                         .and_then(Value::as_str)
@@ -223,6 +225,10 @@ pub fn execute_named(name: &str, args: Value, app: Option<AppHandle>) -> AppResu
 
         "get_runtime_status" => Ok(serde_json::to_value(super::system::get_runtime_status()?)
             .map_err(|e| AppError::Io(e.to_string()))?),
+        "get_runtime_adapter_inventory" => Ok(
+            serde_json::to_value(super::system::get_runtime_adapter_inventory()?)
+                .map_err(|e| AppError::Io(e.to_string()))?,
+        ),
         "get_log_status" => Ok(serde_json::to_value(super::system::get_log_status()?)
             .map_err(|e| AppError::Io(e.to_string()))?),
         "check_mt_runtime" => Ok(serde_json::to_value(super::system::check_mt_runtime()?)
