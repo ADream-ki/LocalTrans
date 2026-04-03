@@ -64,15 +64,13 @@ function App() {
               </button>
             );
           })}
-          {!modelOnboardingSeen && (
-            <button
-              onClick={() => openModelOnboarding()}
-              className="ml-auto flex items-center gap-s px-l py-s rounded-medium font-medium text-primary hover:bg-primary/10 transition-colors duration-fast"
-            >
-              <Sparkles size={16} />
-              <span>首次向导</span>
-            </button>
-          )}
+          <button
+            onClick={() => openModelOnboarding()}
+            className="ml-auto flex items-center gap-s px-l py-s rounded-medium font-medium text-primary hover:bg-primary/10 transition-colors duration-fast"
+          >
+            <Sparkles size={16} />
+            <span>{modelOnboardingSeen ? "快速上手" : "首次向导"}</span>
+          </button>
         </div>
 
         {/* Page Content */}
