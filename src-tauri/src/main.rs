@@ -162,6 +162,13 @@ fn run_cli(command: Commands) -> Result<(), AppError> {
                 },
             )))
         }
+        Commands::LociWorkflowPolicy { model_path } => {
+            emit_json(commands::loci_runtime::get_loci_workflow_policy(Some(
+                commands::loci_runtime::LociSnapshotRequest {
+                    model_path: model_path.map(|p| p.display().to_string()),
+                },
+            )))
+        }
         Commands::LociRewriterInventory { model_path } => {
             emit_json(commands::loci_runtime::get_loci_rewriter_inventory(Some(
                 commands::loci_runtime::LociSnapshotRequest {
@@ -292,6 +299,9 @@ fn to_ipc_command(command: &Commands) -> IpcCommand {
             model_path: model_path.as_ref().map(|p| p.display().to_string()),
         },
         Commands::LociGovernanceSnapshot { model_path } => IpcCommand::LociGovernanceSnapshot {
+            model_path: model_path.as_ref().map(|p| p.display().to_string()),
+        },
+        Commands::LociWorkflowPolicy { model_path } => IpcCommand::LociWorkflowPolicy {
             model_path: model_path.as_ref().map(|p| p.display().to_string()),
         },
         Commands::LociRewriterInventory { model_path } => IpcCommand::LociRewriterInventory {

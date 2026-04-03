@@ -1,13 +1,13 @@
 use std::path::PathBuf;
 
 #[cfg(feature = "loci-backend")]
+use anyhow::{Context, Result};
+#[cfg(feature = "loci-backend")]
 use loci::{
     CoreComponent, CoreRewriterActivationRequest, CoreRewriterActivationStatus,
     CoreRewriterInventoryStatus, InferenceEngine, ManagementService, PluginLoadRequest,
-    PluginLoadSourceKind, PluginLoadStatus, RuntimeSnapshot,
+    PluginLoadSourceKind, PluginLoadStatus, RuntimeSnapshot, WorkflowInventoryStatus,
 };
-#[cfg(feature = "loci-backend")]
-use anyhow::{Context, Result};
 #[cfg(feature = "loci-backend")]
 use std::path::Path;
 #[cfg(feature = "loci-backend")]
@@ -150,9 +150,9 @@ fn build_service(model_path: &Path) -> Result<ManagedLociRuntime> {
                 path: plugin_dir.display().to_string(),
                 source_kind: PluginLoadSourceKind::Directory,
             };
-            service
-                .load_plugins(request)
-                .with_context(|| format!("failed to load Loci plugins from {}", plugin_dir.display()))?;
+            service.load_plugins(request).with_context(|| {
+                format!("failed to load Loci plugins from {}", plugin_dir.display())
+            })?;
         }
     }
 
@@ -187,22 +187,27 @@ pub fn ensure_management_service(model_path: &Path) -> Result<ManagementService>
         *state = Some(build_service(model_path)?);
     }
 
-    Ok(state
-        .as_ref()
-        .expect("runtime initialized")
-        .service
-        .clone())
+    Ok(state.as_ref().expect("runtime initialized").service.clone())
 }
 
 #[cfg(feature = "loci-backend")]
 pub fn current_runtime_snapshot(model_path: &Path) -> Result<RuntimeSnapshot> {
-    ensure_management_service(model_path)?.runtime_snapshot().map_err(Into::into)
+    ensure_management_service(model_path)?
+        .runtime_snapshot()
+        .map_err(Into::into)
 }
 
 #[cfg(feature = "loci-backend")]
 pub fn current_rewriter_inventory(model_path: &Path) -> Result<Vec<CoreRewriterInventoryStatus>> {
     ensure_management_service(model_path)?
         .core_rewriter_inventory()
+        .map_err(Into::into)
+}
+
+#[cfg(feature = "loci-backend")]
+pub fn current_workflow_inventory(model_path: &Path) -> Result<WorkflowInventoryStatus> {
+    ensure_management_service(model_path)?
+        .workflow_inventory()
         .map_err(Into::into)
 }
 

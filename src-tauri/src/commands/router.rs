@@ -212,6 +212,14 @@ pub fn execute_named(name: &str, args: Value, app: Option<AppHandle>) -> AppResu
             ))?,
         )
         .map_err(|e| AppError::Io(e.to_string()))?),
+        "get_loci_workflow_policy" => Ok(serde_json::to_value(
+            super::loci_runtime::get_loci_workflow_policy(Some(
+                super::loci_runtime::LociSnapshotRequest {
+                    model_path: arg_opt_str(&args, "model_path"),
+                },
+            ))?,
+        )
+        .map_err(|e| AppError::Io(e.to_string()))?),
         "load_loci_plugins" => Ok(serde_json::to_value(super::loci_runtime::load_loci_plugins(
             super::loci_runtime::LoadLociPluginsRequest {
                 model_path: arg_opt_str(&args, "model_path"),
@@ -233,10 +241,10 @@ pub fn execute_named(name: &str, args: Value, app: Option<AppHandle>) -> AppResu
 
         "get_runtime_status" => Ok(serde_json::to_value(super::system::get_runtime_status()?)
             .map_err(|e| AppError::Io(e.to_string()))?),
-        "get_runtime_adapter_inventory" => Ok(
-            serde_json::to_value(super::system::get_runtime_adapter_inventory()?)
-                .map_err(|e| AppError::Io(e.to_string()))?,
-        ),
+        "get_runtime_adapter_inventory" => Ok(serde_json::to_value(
+            super::system::get_runtime_adapter_inventory()?,
+        )
+        .map_err(|e| AppError::Io(e.to_string()))?),
         "get_log_status" => Ok(serde_json::to_value(super::system::get_log_status()?)
             .map_err(|e| AppError::Io(e.to_string()))?),
         "check_mt_runtime" => Ok(serde_json::to_value(super::system::check_mt_runtime()?)

@@ -161,24 +161,26 @@ fn ensure_not_running() -> AppResult<()> {
     Ok(())
 }
 
-fn cfg_to_pipeline(config: SessionConfig) -> PipelineConfig {
-    let latency_profile = config.latency_profile.clone();
-    let asr_engine = resolved_asr_engine(config.asr_engine.as_deref());
-    let translation_engine =
-        super::translation::resolved_translation_engine(config.translation_engine.as_deref());
-    let tts_engine = resolved_tts_engine(config.tts_engine.as_deref());
+fn cfg_to_pipeline(
+    config: SessionConfig,
+    selection: &crate::runtime_governance::EffectiveRuntimeSelection,
+) -> PipelineConfig {
     let mut pipeline = PipelineConfig {
         source_lang: config.source_lang,
         target_lang: config.target_lang,
-        asr_engine,
-        translation_engine: translation_engine.clone(),
+        asr_engine: selection.asr_engine.clone(),
+        translation_engine: selection.translation_engine.clone(),
         input_device: config.input_device,
         peer_input_device: config.peer_input_device,
-        bidirectional: config.bidirectional,
-        loci_enhanced: config.loci_enhanced || translation_engine == "loci",
+        bidirectional: selection.bidirectional,
+        loci_enhanced: config.loci_enhanced || selection.translation_engine == "loci",
         ..Default::default()
     };
-    if let Some(profile) = latency_profile.as_deref().and_then(LatencyProfile::parse) {
+    if let Some(profile) = selection
+        .latency_profile
+        .as_deref()
+        .and_then(LatencyProfile::parse)
+    {
         pipeline.apply_latency_profile(profile);
     }
     if let Some(v) = config.vad_frame_ms {
@@ -193,13 +195,9 @@ fn cfg_to_pipeline(config: SessionConfig) -> PipelineConfig {
     if let Some(v) = config.stream_translation_min_chars {
         pipeline.stream_translation_min_chars = usize::try_from(v).unwrap_or(8).clamp(2, 64);
     }
-    if let Some(v) = config.tts_enabled {
-        pipeline.tts_enabled = v;
-    }
-    if let Some(v) = config.tts_auto_play {
-        pipeline.tts_auto_play = v;
-    }
-    pipeline.tts_engine = tts_engine;
+    pipeline.tts_enabled = selection.tts_enabled;
+    pipeline.tts_auto_play = selection.tts_auto_play;
+    pipeline.tts_engine = selection.tts_engine.clone();
     if let Some(v) = config.tts_voice {
         pipeline.tts_voice = v;
     }
@@ -224,24 +222,6 @@ fn cfg_to_pipeline(config: SessionConfig) -> PipelineConfig {
     pipeline
 }
 
-pub(crate) fn resolved_asr_engine(requested: Option<&str>) -> String {
-    requested
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(|value| value.to_ascii_lowercase())
-        .or_else(|| super::config::get_string("asrEngine").map(|value| value.to_ascii_lowercase()))
-        .unwrap_or_else(|| "whisper".to_string())
-}
-
-pub(crate) fn resolved_tts_engine(requested: Option<&str>) -> String {
-    requested
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(|value| value.to_ascii_lowercase())
-        .or_else(|| super::config::get_string("ttsEngine").map(|value| value.to_ascii_lowercase()))
-        .unwrap_or_else(|| "sherpa-melo".to_string())
-}
-
 #[cfg(feature = "mock-asr")]
 fn ensure_supported_asr_build() -> AppResult<()> {
     Err(AppError::InvalidState(
@@ -252,7 +232,8 @@ fn ensure_supported_asr_build() -> AppResult<()> {
 #[cfg(all(not(feature = "mock-asr"), not(feature = "sherpa-backend")))]
 fn ensure_supported_asr_build() -> AppResult<()> {
     Err(AppError::InvalidState(
-        "This build has no real ASR backend (sherpa-backend missing). Rebuild with sherpa-backend.".to_string(),
+        "This build has no real ASR backend (sherpa-backend missing). Rebuild with sherpa-backend."
+            .to_string(),
     ))
 }
 
@@ -335,14 +316,25 @@ fn apply_pending_control(pipe: Arc<RealtimePipeline>) {
 
 #[tauri::command]
 pub fn start_session(app: AppHandle, config: SessionConfig) -> AppResult<()> {
-    let asr_engine = resolved_asr_engine(config.asr_engine.as_deref());
+    let effective_selection = crate::runtime_governance::resolve_effective_runtime_selection(
+        config.asr_engine.as_deref(),
+        config.translation_engine.as_deref(),
+        config.tts_engine.as_deref(),
+        config.tts_enabled,
+        config.latency_profile.as_deref(),
+        Some(config.bidirectional),
+        config.tts_auto_play,
+        None,
+    )?;
+
+    let asr_engine = effective_selection.asr_engine.clone();
     if asr_engine == "qwen3-asr" {
         return Err(AppError::InvalidState(
             "qwen3-asr adapter slot is scaffolded, but this build does not yet include a concrete qwen3-asr backend. Please switch ASR engine or wire qwen3_asr_rs/Loci plugin first.".to_string(),
         ));
     }
-    let tts_enabled = config.tts_enabled.unwrap_or(true);
-    let tts_engine = resolved_tts_engine(config.tts_engine.as_deref());
+    let tts_enabled = effective_selection.tts_enabled;
+    let tts_engine = effective_selection.tts_engine.clone();
     if tts_enabled && tts_engine == "qwen3-tts" {
         return Err(AppError::InvalidState(
             "qwen3-tts adapter slot is scaffolded, but this build does not yet include a concrete qwen3-tts backend. Disable backend auto-play or switch TTS engine until qwen3-tts-rs/plugin wiring lands.".to_string(),
@@ -357,8 +349,7 @@ pub fn start_session(app: AppHandle, config: SessionConfig) -> AppResult<()> {
             "ASR model is required before starting session".to_string(),
         ));
     }
-    let translation_engine =
-        super::translation::resolved_translation_engine(config.translation_engine.as_deref());
+    let translation_engine = effective_selection.translation_engine.clone();
     if translation_engine == "loci" && !super::model::has_ready_model("loci")? {
         return Err(AppError::InvalidState(
             "Loci translation model is required when translationEngine=loci".to_string(),
@@ -372,7 +363,7 @@ pub fn start_session(app: AppHandle, config: SessionConfig) -> AppResult<()> {
         );
     }
 
-    let pipeline_cfg = cfg_to_pipeline(config);
+    let pipeline_cfg = cfg_to_pipeline(config, &effective_selection);
     let pipeline = Arc::new(
         RealtimePipeline::new(app, pipeline_cfg.clone())
             .map_err(|e| AppError::InvalidState(format!("create pipeline failed: {e}")))?,

@@ -67,6 +67,10 @@ pub enum Commands {
         #[arg(long)]
         model_path: Option<PathBuf>,
     },
+    LociWorkflowPolicy {
+        #[arg(long)]
+        model_path: Option<PathBuf>,
+    },
     LociRewriterInventory {
         #[arg(long)]
         model_path: Option<PathBuf>,

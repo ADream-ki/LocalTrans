@@ -25,6 +25,7 @@ pub struct RuntimeStatus {
     pub tts_engine: String,
     pub loci_unhealthy: bool,
     pub loci_unhealthy_remaining_sec: u32,
+    pub loci_workflow_policy: crate::runtime_governance::LociWorkflowPolicySnapshot,
 }
 
 #[derive(Debug, Serialize)]
@@ -49,13 +50,13 @@ pub struct MtRuntimeCheck {
 
 #[tauri::command]
 pub fn get_runtime_adapter_inventory() -> AppResult<RuntimeAdapterInventory> {
-    let asr_engine = super::session::resolved_asr_engine(None);
-    let translation_engine = super::translation::resolved_translation_engine(None);
-    let tts_engine = super::session::resolved_tts_engine(None);
+    let selection = crate::runtime_governance::resolve_effective_runtime_selection(
+        None, None, None, None, None, None, None, None,
+    )?;
     Ok(crate::runtime_adapters::runtime_adapter_inventory(
-        &asr_engine,
-        &translation_engine,
-        &tts_engine,
+        &selection.asr_engine,
+        &selection.translation_engine,
+        &selection.tts_engine,
     ))
 }
 
@@ -65,9 +66,12 @@ pub fn get_runtime_status() -> AppResult<RuntimeStatus> {
     let asr_ready = super::model::has_ready_model("asr")?;
     let loci_ready = super::model::has_ready_model("loci")?;
     let bundled_tts_ready = super::model::has_ready_model("tts")?;
-    let asr_engine = super::session::resolved_asr_engine(None);
-    let translation_engine = super::translation::resolved_translation_engine(None);
-    let tts_engine = super::session::resolved_tts_engine(None);
+    let selection = crate::runtime_governance::resolve_effective_runtime_selection(
+        None, None, None, None, None, None, None, None,
+    )?;
+    let asr_engine = selection.asr_engine.clone();
+    let translation_engine = selection.translation_engine.clone();
+    let tts_engine = selection.tts_engine.clone();
     let mt_ready = check_mt_runtime()?.ready;
     let custom_voice_enabled = crate::commands::config::get_value("customVoiceEnabled")
         .and_then(|value| value.as_bool())
@@ -113,7 +117,15 @@ pub fn get_runtime_status() -> AppResult<RuntimeStatus> {
             )
         };
 
-    let (tts_ready, tts_path, tts_message, tts_action) = match tts_engine.as_str() {
+    let (tts_ready, tts_path, tts_message, tts_action) = if !selection.tts_enabled {
+        (
+            true,
+            "host://tts-disabled".to_string(),
+            "TTS is currently disabled by workflow/config governance".to_string(),
+            None,
+        )
+    } else {
+        match tts_engine.as_str() {
         "edge-tts" => (
             true,
             "remote://edge-tts".to_string(),
@@ -172,6 +184,7 @@ pub fn get_runtime_status() -> AppResult<RuntimeStatus> {
             format!("Unknown TTS engine: {other}"),
             None,
         ),
+    }
     };
 
     Ok(RuntimeStatus {
@@ -211,6 +224,7 @@ pub fn get_runtime_status() -> AppResult<RuntimeStatus> {
         tts_engine,
         loci_unhealthy: false,
         loci_unhealthy_remaining_sec: 0,
+        loci_workflow_policy: selection.workflow_policy,
     })
 }
 
@@ -329,7 +343,10 @@ fn resolve_bundled_argos_packages() -> Option<String> {
     let exe = std::env::current_exe().ok()?;
     let exe_dir = exe.parent()?;
     let candidates = [
-        exe_dir.join("resources").join("mt-runtime").join("argos-packages"),
+        exe_dir
+            .join("resources")
+            .join("mt-runtime")
+            .join("argos-packages"),
         exe_dir.join("mt-runtime").join("argos-packages"),
     ];
     candidates

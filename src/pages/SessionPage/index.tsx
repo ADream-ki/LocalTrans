@@ -95,6 +95,25 @@ interface LociGovernanceSnapshot {
   activeRewriterInventory: CoreRewriterInventoryStatus[];
 }
 
+interface LociWorkflowPolicySnapshot {
+  translationEngine: string;
+  governanceEnabled: boolean;
+  runtimeReady: boolean;
+  policyActive: boolean;
+  activeWorkflowRewriter?: string | null;
+  workflows: string[];
+  effectiveAsrEngine?: string | null;
+  effectiveTtsEngine?: string | null;
+  effectiveTtsEnabled?: boolean | null;
+  preferredLatencyProfile?: string | null;
+  forceBidirectional?: boolean | null;
+  forceTtsAutoPlay?: boolean | null;
+  supportsStreaming: boolean;
+  supportsVoiceCloning: boolean;
+  unresolvedWorkflows: string[];
+  statusMessage: string;
+}
+
 interface PipelineStatsPayload {
   type?: "stats";
   total_audio_duration_ms: number;
@@ -212,6 +231,7 @@ function SessionPage() {
   const [runtimeStatusError, setRuntimeStatusError] = useState<string | null>(null);
   const [lociGovernance, setLociGovernance] = useState<LociGovernanceSnapshot | null>(null);
   const [lociGovernanceError, setLociGovernanceError] = useState<string | null>(null);
+  const [lociWorkflowPolicy, setLociWorkflowPolicy] = useState<LociWorkflowPolicySnapshot | null>(null);
   const [pipelineStats, setPipelineStats] = useState<PipelineStatsPayload | null>(null);
 
   useEffect(() => {
@@ -249,14 +269,19 @@ function SessionPage() {
 
     const loadGovernance = async () => {
       try {
-        const snapshot = await invoke<LociGovernanceSnapshot>("get_loci_governance_snapshot");
+        const [snapshot, workflowPolicy] = await Promise.all([
+          invoke<LociGovernanceSnapshot>("get_loci_governance_snapshot"),
+          invoke<LociWorkflowPolicySnapshot>("get_loci_workflow_policy"),
+        ]);
         if (!cancelled) {
           setLociGovernance(snapshot);
+          setLociWorkflowPolicy(workflowPolicy);
           setLociGovernanceError(null);
         }
       } catch (error) {
         if (!cancelled) {
           setLociGovernance(null);
+          setLociWorkflowPolicy(null);
           setLociGovernanceError(error instanceof Error ? error.message : String(error));
         }
       }
@@ -688,6 +713,10 @@ function SessionPage() {
   );
   const activeRewriterCount =
     lociGovernance?.activeRewriterInventory.filter((item) => item.activePluginName).length ?? 0;
+  const governedTtsLabel =
+    lociWorkflowPolicy?.effectiveTtsEnabled === false
+      ? "disabled"
+      : lociWorkflowPolicy?.effectiveTtsEngine || "-";
 
   return (
     <div className="flex h-full">
@@ -1066,9 +1095,26 @@ function SessionPage() {
               <div className="flex items-center justify-between gap-s">
                 <span className="text-text-secondary">Workflow Rewriter</span>
                 <span className="font-mono text-text-primary break-all text-right">
-                  {activeWorkflowRewriter?.activePluginName ||
+                  {lociWorkflowPolicy?.activeWorkflowRewriter ||
+                    activeWorkflowRewriter?.activePluginName ||
                     configuredWorkflowRewriter?.pluginName ||
                     "-"}
+                </span>
+              </div>
+              <div className="flex items-center justify-between gap-s">
+                <span className="text-text-secondary">治理 ASR</span>
+                <span className="font-mono text-text-primary">
+                  {lociWorkflowPolicy?.effectiveAsrEngine || asrEngine}
+                </span>
+              </div>
+              <div className="flex items-center justify-between gap-s">
+                <span className="text-text-secondary">治理 TTS</span>
+                <span className="font-mono text-text-primary">{governedTtsLabel}</span>
+              </div>
+              <div className="flex items-center justify-between gap-s">
+                <span className="text-text-secondary">延迟策略</span>
+                <span className="font-mono text-text-primary">
+                  {lociWorkflowPolicy?.preferredLatencyProfile || "-"}
                 </span>
               </div>
               <div className="flex items-center justify-between gap-s">
@@ -1082,8 +1128,15 @@ function SessionPage() {
                 </span>
               </div>
               <div className="text-text-secondary leading-relaxed break-words">
-                {lociGovernance?.statusMessage || "Loci 治理摘要尚未加载"}
+                {lociWorkflowPolicy?.statusMessage ||
+                  lociGovernance?.statusMessage ||
+                  "Loci 治理摘要尚未加载"}
               </div>
+              {lociWorkflowPolicy && lociWorkflowPolicy.workflows.length > 0 && (
+                <div className="text-[11px] text-text-tertiary break-words">
+                  {lociWorkflowPolicy.workflows.join(", ")}
+                </div>
+              )}
               {(lociGovernance?.modelPath || lociGovernance?.defaultModelDir) && (
                 <div className="font-mono text-[11px] text-text-tertiary break-words">
                   {lociGovernance?.modelPath || lociGovernance?.defaultModelDir}

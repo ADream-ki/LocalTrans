@@ -97,6 +97,8 @@ pub struct LociGovernanceSnapshot {
     pub active_rewriter_inventory: Vec<CoreRewriterInventoryStatus>,
 }
 
+pub type LociWorkflowPolicySnapshot = crate::runtime_governance::LociWorkflowPolicySnapshot;
+
 fn configured_plugin_dirs_snapshot() -> Vec<String> {
     let Some(value) = crate::commands::config::get_value("lociPluginDirs") else {
         return Vec::new();
@@ -155,7 +157,12 @@ fn resolve_model_path(input: Option<&str>) -> AppResult<std::path::PathBuf> {
 
 #[cfg(feature = "loci-backend")]
 fn parse_source_kind(value: Option<&str>) -> PluginLoadSourceKind {
-    match value.unwrap_or("directory").trim().to_ascii_lowercase().as_str() {
+    match value
+        .unwrap_or("directory")
+        .trim()
+        .to_ascii_lowercase()
+        .as_str()
+    {
         "bundle" | "bundle_file" => PluginLoadSourceKind::BundleFile,
         _ => PluginLoadSourceKind::Directory,
     }
@@ -178,10 +185,13 @@ fn parse_component(value: &str) -> AppResult<CoreComponent> {
 }
 
 #[tauri::command]
-pub fn get_loci_runtime_snapshot(request: Option<LociSnapshotRequest>) -> AppResult<LociSnapshotResponse> {
+pub fn get_loci_runtime_snapshot(
+    request: Option<LociSnapshotRequest>,
+) -> AppResult<LociSnapshotResponse> {
     #[cfg(feature = "loci-backend")]
     {
-        let model_path = resolve_model_path(request.as_ref().and_then(|req| req.model_path.as_deref()))?;
+        let model_path =
+            resolve_model_path(request.as_ref().and_then(|req| req.model_path.as_deref()))?;
         let snapshot = crate::loci_runtime::current_runtime_snapshot(&model_path)
             .map_err(|e| AppError::InvalidState(e.to_string()))?;
         let plugin_dirs = crate::loci_runtime::current_plugin_dirs(&model_path)
@@ -208,7 +218,8 @@ pub fn get_loci_rewriter_inventory(
 ) -> AppResult<Vec<CoreRewriterInventoryStatus>> {
     #[cfg(feature = "loci-backend")]
     {
-        let model_path = resolve_model_path(request.as_ref().and_then(|req| req.model_path.as_deref()))?;
+        let model_path =
+            resolve_model_path(request.as_ref().and_then(|req| req.model_path.as_deref()))?;
         return crate::loci_runtime::current_rewriter_inventory(&model_path)
             .map_err(|e| AppError::InvalidState(e.to_string()));
     }
@@ -269,8 +280,9 @@ pub fn get_loci_governance_snapshot(
             });
         };
 
-        let active_rewriter_inventory = crate::loci_runtime::current_rewriter_inventory(&model_path)
-            .map_err(|e| AppError::InvalidState(e.to_string()))?;
+        let active_rewriter_inventory =
+            crate::loci_runtime::current_rewriter_inventory(&model_path)
+                .map_err(|e| AppError::InvalidState(e.to_string()))?;
         let plugin_dirs = crate::loci_runtime::current_plugin_dirs(&model_path)
             .map_err(|e| AppError::InvalidState(e.to_string()))?;
 
@@ -303,6 +315,16 @@ pub fn get_loci_governance_snapshot(
             active_rewriter_inventory: Vec::new(),
         })
     }
+}
+
+#[tauri::command]
+pub fn get_loci_workflow_policy(
+    request: Option<LociSnapshotRequest>,
+) -> AppResult<LociWorkflowPolicySnapshot> {
+    crate::runtime_governance::workflow_policy_snapshot(
+        None,
+        request.as_ref().and_then(|req| req.model_path.as_deref()),
+    )
 }
 
 #[tauri::command]

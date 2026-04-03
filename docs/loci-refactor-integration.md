@@ -58,6 +58,7 @@ The host now has backend commands for the Loci runtime:
 - `get_loci_runtime_snapshot`
 - `get_loci_rewriter_inventory`
 - `get_loci_governance_snapshot`
+- `get_loci_workflow_policy`
 - `load_loci_plugins`
 - `activate_loci_rewriter`
 
@@ -72,12 +73,14 @@ Example:
 ```powershell
 localtrans.exe loci-runtime-snapshot
 localtrans.exe loci-governance-snapshot
+localtrans.exe loci-workflow-policy
 localtrans.exe loci-rewriter-inventory
 localtrans.exe loci-load-plugins --path D:\plugins\loci --source-kind directory
 localtrans.exe loci-activate-rewriter --component workflow --plugin-name my-workflow-plugin
 
 localtrans.exe call --name get_loci_runtime_snapshot --args-json "{}"
 localtrans.exe call --name get_loci_governance_snapshot --args-json "{}"
+localtrans.exe call --name get_loci_workflow_policy --args-json "{}"
 localtrans.exe call --name load_loci_plugins --args-json "{\"path\":\"D:\\\\plugins\\\\loci\",\"source_kind\":\"directory\"}"
 localtrans.exe call --name activate_loci_rewriter --args-json "{\"component\":\"inference\",\"plugin_name\":\"my-inference-plugin\"}"
 ```
@@ -114,10 +117,37 @@ Current behavior:
 - translation uses explicit MT adapters (`LociMtAdapter`, `DeterministicMtAdapter`)
 - ASR is instantiated through a runtime adapter factory instead of direct pipeline wiring
 - TTS is instantiated through a runtime adapter factory instead of a hardcoded command bridge
+- when `translationEngine=loci`, the host now resolves an effective runtime selection through a dedicated governance layer instead of reading ASR/TTS/latency solely from host config
+- an active Loci `workflow` rewriter can now steer effective ASR route, TTS route, latency profile, bidirectional mode, and backend TTS autoplay/disable behavior
 - backend runtime diagnostics now expose adapter inventory plus selected ASR/MT/TTS routes
 - when backend TTS is disabled, the realtime pipeline now uses a no-op TTS adapter instead of failing on an unavailable concrete TTS backend
 - diagnostics now expose a dedicated Loci governance snapshot: selected engine state, resolved model path, configured plugin dirs, configured core rewriters, and current active rewriter inventory
 - session UI now exposes a lightweight Loci governance summary so workflow/plugin state is visible during live operation instead of only on the diagnostics page
+
+Current workflow declaration conventions recognized by `LocalTrans`:
+
+- `speech.asr.whisper`
+- `speech.asr.sensevoice`
+- `speech.asr.vosk`
+- `speech.asr.qwen3-asr`
+- `speech.tts.sherpa-melo`
+- `speech.tts.edge-tts`
+- `speech.tts.system`
+- `speech.tts.piper`
+- `speech.tts.custom`
+- `speech.tts.qwen3-tts`
+- `speech.tts.none`
+- `speech.tts.autoplay`
+- `speech.tts.manual`
+- `speech.latency.low-latency`
+- `speech.latency.balanced`
+- `speech.latency.high-accuracy`
+- `speech.mode.bidirectional`
+- `speech.mode.unidirectional`
+- `speech.translate.realtime`
+- `speech.voice.clone`
+
+These declarations are intentionally manifest-first and map cleanly onto the active OSS migration targets already tracked in `docs/open-source-reference-matrix.md`, especially the `qwen3-asr-rs` and `qwen3-tts-rs` adapter slots.
 
 Scaffolded engine slots:
 

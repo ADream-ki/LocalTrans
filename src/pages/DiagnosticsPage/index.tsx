@@ -76,6 +76,25 @@ interface LociGovernanceSnapshot {
   activeRewriterInventory: CoreRewriterInventoryStatus[];
 }
 
+interface LociWorkflowPolicySnapshot {
+  translationEngine: string;
+  governanceEnabled: boolean;
+  runtimeReady: boolean;
+  policyActive: boolean;
+  activeWorkflowRewriter?: string | null;
+  workflows: string[];
+  effectiveAsrEngine?: string | null;
+  effectiveTtsEngine?: string | null;
+  effectiveTtsEnabled?: boolean | null;
+  preferredLatencyProfile?: string | null;
+  forceBidirectional?: boolean | null;
+  forceTtsAutoPlay?: boolean | null;
+  supportsStreaming: boolean;
+  supportsVoiceCloning: boolean;
+  unresolvedWorkflows: string[];
+  statusMessage: string;
+}
+
 interface TtsSystemDoctorPlaybackResult {
   systemOk: boolean;
   systemDetail: string;
@@ -122,6 +141,7 @@ function DiagnosticsPage() {
       const runtime = await invoke<RuntimeStatus>("get_runtime_status");
       const adapterInventory = await invoke<RuntimeAdapterInventory>("get_runtime_adapter_inventory");
       const lociGovernance = await invoke<LociGovernanceSnapshot>("get_loci_governance_snapshot");
+      const lociWorkflowPolicy = await invoke<LociWorkflowPolicySnapshot>("get_loci_workflow_policy");
       const selectedAsrAdapter = adapterInventory.asr.find((item) => item.selected);
       const selectedTranslationAdapter = adapterInventory.translation.find((item) => item.selected);
       const selectedTtsAdapter = adapterInventory.tts.find((item) => item.selected);
@@ -218,6 +238,30 @@ function DiagnosticsPage() {
                   .join(", ") || "无",
               status:
                 lociGovernance.activeRewriterInventory.length > 0 ? "ok" : "warning",
+            },
+            {
+              key: "Workflow 治理插件",
+              value: lociWorkflowPolicy.activeWorkflowRewriter || "-",
+              status: lociWorkflowPolicy.policyActive ? "ok" : "warning",
+            },
+            {
+              key: "治理后 ASR/TTS",
+              value: `${lociWorkflowPolicy.effectiveAsrEngine || runtime.asr.engine || "-"} / ${
+                lociWorkflowPolicy.effectiveTtsEnabled === false
+                  ? "disabled"
+                  : lociWorkflowPolicy.effectiveTtsEngine || runtime.tts.engine || runtime.ttsEngine || "-"
+              }`,
+              status: lociWorkflowPolicy.policyActive ? "ok" : "warning",
+            },
+            {
+              key: "Workflow 声明",
+              value: lociWorkflowPolicy.workflows.join(", ") || "无",
+              status: lociWorkflowPolicy.workflows.length > 0 ? "ok" : "warning",
+            },
+            {
+              key: "策略说明",
+              value: lociWorkflowPolicy.statusMessage || "-",
+              status: lociWorkflowPolicy.policyActive ? "ok" : "warning",
             },
           ],
         },

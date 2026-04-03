@@ -51,6 +51,9 @@ pub enum IpcCommand {
     LociGovernanceSnapshot {
         model_path: Option<String>,
     },
+    LociWorkflowPolicy {
+        model_path: Option<String>,
+    },
     LociRewriterInventory {
         model_path: Option<String>,
     },
@@ -292,6 +295,11 @@ fn execute(command: IpcCommand, app: AppHandle) -> AppResult<Value> {
         }
         IpcCommand::LociGovernanceSnapshot { model_path } => {
             to_json(commands::loci_runtime::get_loci_governance_snapshot(Some(
+                commands::loci_runtime::LociSnapshotRequest { model_path },
+            )))
+        }
+        IpcCommand::LociWorkflowPolicy { model_path } => {
+            to_json(commands::loci_runtime::get_loci_workflow_policy(Some(
                 commands::loci_runtime::LociSnapshotRequest { model_path },
             )))
         }
