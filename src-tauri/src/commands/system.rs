@@ -15,6 +15,40 @@ pub struct RuntimeComponentStatus {
     pub engine: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionPreflightItem {
+    pub code: String,
+    pub stage: String,
+    pub severity: String,
+    pub label: String,
+    pub message: String,
+    pub action: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EffectiveRuntimeSummary {
+    pub asr_engine: String,
+    pub translation_engine: String,
+    pub tts_engine: String,
+    pub tts_enabled: bool,
+    pub tts_auto_play: bool,
+    pub bidirectional: bool,
+    pub latency_profile: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionPreflightStatus {
+    pub can_start: bool,
+    pub summary: String,
+    pub blockers: Vec<SessionPreflightItem>,
+    pub warnings: Vec<SessionPreflightItem>,
+    pub effective_runtime: EffectiveRuntimeSummary,
+    pub workflow_policy: crate::runtime_governance::LociWorkflowPolicySnapshot,
+}
+
 #[derive(Debug, Serialize)]
 pub struct RuntimeStatus {
     pub models_dir: String,
@@ -46,6 +80,189 @@ pub struct MtRuntimeCheck {
     pub language_pairs: Vec<String>,
     pub ready: bool,
     pub message: String,
+}
+
+fn build_preflight(
+    requested_asr_engine: Option<&str>,
+    requested_translation_engine: Option<&str>,
+    requested_tts_engine: Option<&str>,
+    requested_tts_enabled: Option<bool>,
+    requested_tts_auto_play: Option<bool>,
+    requested_bidirectional: Option<bool>,
+    requested_latency_profile: Option<&str>,
+) -> AppResult<SessionPreflightStatus> {
+    let selection = crate::runtime_governance::resolve_effective_runtime_selection(
+        requested_asr_engine,
+        requested_translation_engine,
+        requested_tts_engine,
+        requested_tts_enabled,
+        requested_latency_profile,
+        requested_bidirectional,
+        requested_tts_auto_play,
+        None,
+    )?;
+
+    let asr_ready = super::model::has_ready_model("asr")?;
+    let loci_ready = super::model::has_ready_model("loci")?;
+    let bundled_tts_ready = super::model::has_ready_model("tts")?;
+    let mt_ready = check_mt_runtime()?.ready;
+    let custom_voice_enabled = crate::commands::config::get_value("customVoiceEnabled")
+        .and_then(|value| value.as_bool())
+        .unwrap_or(false);
+    let custom_voice_profile_id = crate::commands::config::get_string("customVoiceProfileId");
+    let custom_voice_model_path = crate::commands::config::get_string("customVoiceModelPath");
+
+    let mut blockers = Vec::new();
+    let mut warnings = Vec::new();
+
+    if selection.asr_engine == "qwen3-asr" {
+        blockers.push(SessionPreflightItem {
+            code: "asr.qwen3_unavailable".to_string(),
+            stage: "asr".to_string(),
+            severity: "blocker".to_string(),
+            label: "Qwen3-ASR 尚未接入".to_string(),
+            message:
+                "当前构建只暴露 qwen3-asr 适配器槽位，尚未包含可执行后端。请切换到 Whisper、SenseVoice 或 Vosk。"
+                    .to_string(),
+            action: Some("open_settings_page".to_string()),
+        });
+    } else if !asr_ready {
+        blockers.push(SessionPreflightItem {
+            code: "asr.model_missing".to_string(),
+            stage: "asr".to_string(),
+            severity: "blocker".to_string(),
+            label: "缺少 ASR 模型".to_string(),
+            message: "实时会话需要本地 ASR 模型才能启动。".to_string(),
+            action: Some("open_model_page".to_string()),
+        });
+    }
+
+    if selection.translation_engine == "loci" {
+        if !loci_ready {
+            blockers.push(SessionPreflightItem {
+                code: "translation.loci_model_missing".to_string(),
+                stage: "translation".to_string(),
+                severity: "blocker".to_string(),
+                label: "缺少 Loci 模型".to_string(),
+                message: "选择 Loci 翻译时，必须先准备本地 GGUF 模型。".to_string(),
+                action: Some("download_loci_model".to_string()),
+            });
+        }
+        if !selection.workflow_policy.policy_active {
+            warnings.push(SessionPreflightItem {
+                code: "workflow.inactive".to_string(),
+                stage: "workflow".to_string(),
+                severity: "warning".to_string(),
+                label: "Workflow 治理未接管".to_string(),
+                message:
+                    "当前 Loci 运行时没有激活 workflow rewriter，会退回宿主默认路由选择。"
+                        .to_string(),
+                action: Some("open_settings_page".to_string()),
+            });
+        }
+        if !selection.workflow_policy.unresolved_workflows.is_empty() {
+            warnings.push(SessionPreflightItem {
+                code: "workflow.unresolved".to_string(),
+                stage: "workflow".to_string(),
+                severity: "warning".to_string(),
+                label: "存在未识别的 speech workflow 声明".to_string(),
+                message: selection.workflow_policy.unresolved_workflows.join(", "),
+                action: Some("open_diagnostics_page".to_string()),
+            });
+        }
+    } else if !mt_ready {
+        blockers.push(SessionPreflightItem {
+            code: "translation.mt_runtime_missing".to_string(),
+            stage: "translation".to_string(),
+            severity: "blocker".to_string(),
+            label: "机翻运行时未就绪".to_string(),
+            message: "当前确定性 MT 运行时不完整，无法启动会话。".to_string(),
+            action: Some("prepare_mt_runtime".to_string()),
+        });
+    }
+
+    if selection.tts_enabled {
+        match selection.tts_engine.as_str() {
+            "qwen3-tts" => blockers.push(SessionPreflightItem {
+                code: "tts.qwen3_unavailable".to_string(),
+                stage: "tts".to_string(),
+                severity: "blocker".to_string(),
+                label: "Qwen3-TTS 尚未接入".to_string(),
+                message:
+                    "当前构建只暴露 qwen3-tts 适配器槽位，尚未包含可执行后端。".to_string(),
+                action: Some("open_settings_page".to_string()),
+            }),
+            "sherpa-melo" | "piper" => {
+                if !bundled_tts_ready {
+                    blockers.push(SessionPreflightItem {
+                        code: "tts.assets_missing".to_string(),
+                        stage: "tts".to_string(),
+                        severity: "blocker".to_string(),
+                        label: "缺少本地 TTS 资源".to_string(),
+                        message: "当前 TTS 引擎需要本地语音资源，尚未安装。".to_string(),
+                        action: Some("download_tts_model".to_string()),
+                    });
+                }
+            }
+            "custom" => {
+                let ready = custom_voice_enabled
+                    && (custom_voice_profile_id.is_some() || custom_voice_model_path.is_some());
+                if !ready {
+                    blockers.push(SessionPreflightItem {
+                        code: "tts.custom_not_configured".to_string(),
+                        stage: "tts".to_string(),
+                        severity: "blocker".to_string(),
+                        label: "自定义音色未配置".to_string(),
+                        message:
+                            "当前选择了自定义音色，但没有可用的 profile 或模型路径。".to_string(),
+                        action: Some("open_settings_page".to_string()),
+                    });
+                }
+            }
+            "edge-tts" => warnings.push(SessionPreflightItem {
+                code: "tts.edge_privacy".to_string(),
+                stage: "tts".to_string(),
+                severity: "warning".to_string(),
+                label: "Edge TTS 会联网".to_string(),
+                message: "要合成的文本会发送到微软服务，不适合强隐私场景。".to_string(),
+                action: None,
+            }),
+            _ => {}
+        }
+    } else {
+        warnings.push(SessionPreflightItem {
+            code: "tts.disabled".to_string(),
+            stage: "tts".to_string(),
+            severity: "warning".to_string(),
+            label: "自动播报已关闭".to_string(),
+            message: "会话可以启动，但不会自动播放翻译语音。".to_string(),
+            action: None,
+        });
+    }
+
+    let can_start = blockers.is_empty();
+    let summary = if can_start {
+        "当前配置可以启动实时会话".to_string()
+    } else {
+        format!("启动前还需处理 {} 个阻塞项", blockers.len())
+    };
+
+    Ok(SessionPreflightStatus {
+        can_start,
+        summary,
+        blockers,
+        warnings,
+        effective_runtime: EffectiveRuntimeSummary {
+            asr_engine: selection.asr_engine,
+            translation_engine: selection.translation_engine,
+            tts_engine: selection.tts_engine,
+            tts_enabled: selection.tts_enabled,
+            tts_auto_play: selection.tts_auto_play,
+            bidirectional: selection.bidirectional,
+            latency_profile: selection.latency_profile,
+        },
+        workflow_policy: selection.workflow_policy,
+    })
 }
 
 #[tauri::command]
@@ -226,6 +443,11 @@ pub fn get_runtime_status() -> AppResult<RuntimeStatus> {
         loci_unhealthy_remaining_sec: 0,
         loci_workflow_policy: selection.workflow_policy,
     })
+}
+
+#[tauri::command]
+pub fn get_session_preflight() -> AppResult<SessionPreflightStatus> {
+    build_preflight(None, None, None, None, None, None, None)
 }
 
 #[tauri::command]

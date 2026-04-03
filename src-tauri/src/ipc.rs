@@ -45,6 +45,7 @@ pub enum IpcCommand {
     SessionPause,
     SessionResume,
     SessionStop,
+    SessionPreflight,
     LociRuntimeSnapshot {
         model_path: Option<String>,
     },
@@ -288,6 +289,7 @@ fn execute(command: IpcCommand, app: AppHandle) -> AppResult<Value> {
             commands::session::stop_session(app)?;
             to_json(commands::session::get_session_status())
         }
+        IpcCommand::SessionPreflight => to_json(commands::system::get_session_preflight()),
         IpcCommand::LociRuntimeSnapshot { model_path } => {
             to_json(commands::loci_runtime::get_loci_runtime_snapshot(Some(
                 commands::loci_runtime::LociSnapshotRequest { model_path },

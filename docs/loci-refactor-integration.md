@@ -74,6 +74,7 @@ Example:
 localtrans.exe loci-runtime-snapshot
 localtrans.exe loci-governance-snapshot
 localtrans.exe loci-workflow-policy
+localtrans.exe session-preflight
 localtrans.exe loci-rewriter-inventory
 localtrans.exe loci-load-plugins --path D:\plugins\loci --source-kind directory
 localtrans.exe loci-activate-rewriter --component workflow --plugin-name my-workflow-plugin
@@ -81,6 +82,7 @@ localtrans.exe loci-activate-rewriter --component workflow --plugin-name my-work
 localtrans.exe call --name get_loci_runtime_snapshot --args-json "{}"
 localtrans.exe call --name get_loci_governance_snapshot --args-json "{}"
 localtrans.exe call --name get_loci_workflow_policy --args-json "{}"
+localtrans.exe call --name get_session_preflight --args-json "{}"
 localtrans.exe call --name load_loci_plugins --args-json "{\"path\":\"D:\\\\plugins\\\\loci\",\"source_kind\":\"directory\"}"
 localtrans.exe call --name activate_loci_rewriter --args-json "{\"component\":\"inference\",\"plugin_name\":\"my-inference-plugin\"}"
 ```
@@ -126,6 +128,7 @@ Current behavior:
 - diagnostics now expose a dedicated Loci governance snapshot: selected engine state, resolved model path, configured plugin dirs, configured core rewriters, and current active rewriter inventory
 - session UI now exposes a lightweight Loci governance summary so workflow/plugin state is visible during live operation instead of only on the diagnostics page
 - settings UI now exposes `lociPluginDirs` and `lociWorkflowPlugin`, so manifest-first workflow governance can be configured without editing `.localtrans-config.json` by hand
+- session UI now exposes a startup preflight so users see blockers and corrective actions before they hit runtime errors
 
 Current workflow declaration conventions recognized by `LocalTrans`:
 

@@ -201,6 +201,7 @@ fn run_cli(command: Commands) -> Result<(), AppError> {
         Commands::SessionPause => emit_json(commands::session::pause_session_cli()),
         Commands::SessionResume => emit_json(commands::session::resume_session_cli()),
         Commands::SessionStop => emit_json(commands::session::stop_session_cli()),
+        Commands::SessionPreflight => emit_json(commands::system::get_session_preflight()),
         Commands::SessionStatus => emit_json(commands::session::session_status_cli()),
         Commands::SessionStats => emit_json(commands::session::get_session_stats()),
         Commands::SessionHistory { count } => {
@@ -328,6 +329,7 @@ fn to_ipc_command(command: &Commands) -> IpcCommand {
         Commands::SessionPause => IpcCommand::SessionPause,
         Commands::SessionResume => IpcCommand::SessionResume,
         Commands::SessionStop => IpcCommand::SessionStop,
+        Commands::SessionPreflight => IpcCommand::SessionPreflight,
         Commands::SessionStatus => IpcCommand::SessionStatus,
         Commands::SessionStats => IpcCommand::SessionStats,
         Commands::SessionHistory { count } => IpcCommand::SessionHistory { count: *count },

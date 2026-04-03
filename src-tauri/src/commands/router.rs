@@ -241,6 +241,10 @@ pub fn execute_named(name: &str, args: Value, app: Option<AppHandle>) -> AppResu
 
         "get_runtime_status" => Ok(serde_json::to_value(super::system::get_runtime_status()?)
             .map_err(|e| AppError::Io(e.to_string()))?),
+        "get_session_preflight" => Ok(serde_json::to_value(
+            super::system::get_session_preflight()?,
+        )
+        .map_err(|e| AppError::Io(e.to_string()))?),
         "get_runtime_adapter_inventory" => Ok(serde_json::to_value(
             super::system::get_runtime_adapter_inventory()?,
         )

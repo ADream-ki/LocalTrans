@@ -94,6 +94,7 @@ pub enum Commands {
     SessionPause,
     SessionResume,
     SessionStop,
+    SessionPreflight,
     SessionStatus,
     SessionStats,
     SessionHistory {

@@ -114,6 +114,34 @@ interface LociWorkflowPolicySnapshot {
   statusMessage: string;
 }
 
+interface SessionPreflightItem {
+  code: string;
+  stage: string;
+  severity: string;
+  label: string;
+  message: string;
+  action?: string | null;
+}
+
+interface EffectiveRuntimeSummary {
+  asrEngine: string;
+  translationEngine: string;
+  ttsEngine: string;
+  ttsEnabled: boolean;
+  ttsAutoPlay: boolean;
+  bidirectional: boolean;
+  latencyProfile?: string | null;
+}
+
+interface SessionPreflightStatus {
+  canStart: boolean;
+  summary: string;
+  blockers: SessionPreflightItem[];
+  warnings: SessionPreflightItem[];
+  effectiveRuntime: EffectiveRuntimeSummary;
+  workflowPolicy: LociWorkflowPolicySnapshot;
+}
+
 interface PipelineStatsPayload {
   type?: "stats";
   total_audio_duration_ms: number;
@@ -232,6 +260,8 @@ function SessionPage() {
   const [lociGovernance, setLociGovernance] = useState<LociGovernanceSnapshot | null>(null);
   const [lociGovernanceError, setLociGovernanceError] = useState<string | null>(null);
   const [lociWorkflowPolicy, setLociWorkflowPolicy] = useState<LociWorkflowPolicySnapshot | null>(null);
+  const [preflight, setPreflight] = useState<SessionPreflightStatus | null>(null);
+  const [preflightError, setPreflightError] = useState<string | null>(null);
   const [pipelineStats, setPipelineStats] = useState<PipelineStatsPayload | null>(null);
 
   useEffect(() => {
@@ -297,6 +327,45 @@ function SessionPage() {
       window.clearInterval(id);
     };
   }, [translationEngine]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const loadPreflight = async () => {
+      try {
+        const next = await invoke<SessionPreflightStatus>("get_session_preflight");
+        if (!cancelled) {
+          setPreflight(next);
+          setPreflightError(null);
+        }
+      } catch (error) {
+        if (!cancelled) {
+          setPreflight(null);
+          setPreflightError(error instanceof Error ? error.message : String(error));
+        }
+      }
+    };
+
+    void loadPreflight();
+    const id = window.setInterval(() => {
+      void loadPreflight();
+    }, 2500);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
+    };
+  }, [
+    translationEngine,
+    asrEngine,
+    ttsEngine,
+    ttsEnabled,
+    ttsAutoPlay,
+    streamTranslationIntervalMs,
+    streamTranslationMinChars,
+    streamTtsIntervalMs,
+    streamTtsMinChars,
+  ]);
 
   // If loci is temporarily unhealthy, auto fallback to nllb to avoid repeated freezes/crashes.
   useEffect(() => {
@@ -679,6 +748,28 @@ function SessionPage() {
     }
   };
 
+  const handlePreflightAction = useCallback(
+    (action?: string | null) => {
+      switch (action) {
+        case "open_model_page":
+        case "download_loci_model":
+        case "download_tts_model":
+        case "prepare_mt_runtime":
+          setActiveTab("model");
+          break;
+        case "open_settings_page":
+          setActiveTab("settings");
+          break;
+        case "open_diagnostics_page":
+          setActiveTab("diagnostics");
+          break;
+        default:
+          break;
+      }
+    },
+    [setActiveTab]
+  );
+
   const statusIndicator = (() => {
     const indicatorStatus =
       status === "error"
@@ -809,6 +900,55 @@ function SessionPage() {
               {lastError}
             </p>
           </div>
+        )}
+
+        {(preflightError || (preflight && (!preflight.canStart || preflight.warnings.length > 0))) && (
+          <GlassCard className="p-m">
+            <div className="flex items-start gap-s">
+              <AlertCircle
+                size={16}
+                className={`mt-xs flex-shrink-0 ${
+                  preflight?.canStart ? "text-warning" : "text-error"
+                }`}
+              />
+              <div className="flex-1 space-y-s">
+                <div className="text-xs font-medium text-text-primary">启动前检查</div>
+                <div className="text-xs text-text-secondary break-words">
+                  {preflightError || preflight?.summary || "正在检查当前会话配置"}
+                </div>
+                {preflight?.blockers.map((item) => (
+                  <div key={item.code} className="text-xs text-text-secondary break-words">
+                    <span className="text-error font-medium">{item.label}</span>
+                    <span className="ml-xs">{item.message}</span>
+                    {item.action && (
+                      <button
+                        type="button"
+                        onClick={() => handlePreflightAction(item.action)}
+                        className="ml-s text-primary hover:underline"
+                      >
+                        处理
+                      </button>
+                    )}
+                  </div>
+                ))}
+                {preflight?.warnings.slice(0, 2).map((item) => (
+                  <div key={item.code} className="text-xs text-text-secondary break-words">
+                    <span className="text-warning font-medium">{item.label}</span>
+                    <span className="ml-xs">{item.message}</span>
+                    {item.action && (
+                      <button
+                        type="button"
+                        onClick={() => handlePreflightAction(item.action)}
+                        className="ml-s text-primary hover:underline"
+                      >
+                        查看
+                      </button>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          </GlassCard>
         )}
 
         {(runtimeStatusError || (runtimeStatus && (!runtimeStatus.asr.ready || !runtimeStatus.translation.ready))) && (
@@ -1206,13 +1346,15 @@ function SessionPage() {
           {!isRunning ? (
             <button
               onClick={startSession}
-              disabled={runtimeStatus ? asrEngine !== "qwen3-asr" && !runtimeStatus.asr.ready : false}
+              disabled={!preflight?.canStart}
               className="btn-primary flex-1 flex items-center justify-center gap-s"
             >
               <Play size={16} />
-              {runtimeStatus && asrEngine !== "qwen3-asr" && !runtimeStatus.asr.ready
-                ? "需要 ASR 模型"
-                : "开始"}
+              {!preflight
+                ? "检查中"
+                : preflight.canStart
+                  ? "开始"
+                  : "需先处理检查项"}
             </button>
           ) : (
             <>
