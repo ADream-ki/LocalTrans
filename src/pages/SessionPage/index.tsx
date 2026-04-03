@@ -72,6 +72,29 @@ interface RuntimeStatus {
   ttsEngine?: string;
 }
 
+interface CoreRewriterInventoryStatus {
+  component: string;
+  activePluginName?: string | null;
+  availablePlugins: string[];
+}
+
+interface ConfiguredLociRewriterTarget {
+  component: string;
+  pluginName: string;
+}
+
+interface LociGovernanceSnapshot {
+  translationEngine: string;
+  lociSelected: boolean;
+  runtimeReady: boolean;
+  statusMessage: string;
+  defaultModelDir: string;
+  modelPath?: string | null;
+  pluginDirs: string[];
+  configuredRewriterTargets: ConfiguredLociRewriterTarget[];
+  activeRewriterInventory: CoreRewriterInventoryStatus[];
+}
+
 interface PipelineStatsPayload {
   type?: "stats";
   total_audio_duration_ms: number;
@@ -187,6 +210,8 @@ function SessionPage() {
 
   const [runtimeStatus, setRuntimeStatus] = useState<RuntimeStatus | null>(null);
   const [runtimeStatusError, setRuntimeStatusError] = useState<string | null>(null);
+  const [lociGovernance, setLociGovernance] = useState<LociGovernanceSnapshot | null>(null);
+  const [lociGovernanceError, setLociGovernanceError] = useState<string | null>(null);
   const [pipelineStats, setPipelineStats] = useState<PipelineStatsPayload | null>(null);
 
   useEffect(() => {
@@ -218,6 +243,35 @@ function SessionPage() {
       cancelled = true;
     };
   }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const loadGovernance = async () => {
+      try {
+        const snapshot = await invoke<LociGovernanceSnapshot>("get_loci_governance_snapshot");
+        if (!cancelled) {
+          setLociGovernance(snapshot);
+          setLociGovernanceError(null);
+        }
+      } catch (error) {
+        if (!cancelled) {
+          setLociGovernance(null);
+          setLociGovernanceError(error instanceof Error ? error.message : String(error));
+        }
+      }
+    };
+
+    void loadGovernance();
+    const id = window.setInterval(() => {
+      void loadGovernance();
+    }, 4000);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
+    };
+  }, [translationEngine]);
 
   // If loci is temporarily unhealthy, auto fallback to nllb to avoid repeated freezes/crashes.
   useEffect(() => {
@@ -626,6 +680,15 @@ function SessionPage() {
     return { indicatorStatus, label } as const;
   })();
 
+  const configuredWorkflowRewriter = lociGovernance?.configuredRewriterTargets.find(
+    (item) => item.component === "workflow"
+  );
+  const activeWorkflowRewriter = lociGovernance?.activeRewriterInventory.find(
+    (item) => item.component === "workflow"
+  );
+  const activeRewriterCount =
+    lociGovernance?.activeRewriterInventory.filter((item) => item.activePluginName).length ?? 0;
+
   return (
     <div className="flex h-full">
       {/* Left Panel - Controls */}
@@ -970,6 +1033,72 @@ function SessionPage() {
             <label htmlFor="bidirectional" className="text-s text-text-secondary">
               双向翻译模式
             </label>
+          </div>
+        </GlassCard>
+
+        <GlassCard className="p-m">
+          <h3 className="text-m font-medium text-text-primary mb-m flex items-center gap-s">
+            <Shield size={16} className="text-primary" />
+            Loci 治理
+          </h3>
+          {lociGovernanceError ? (
+            <div className="text-xs text-warning break-words">{lociGovernanceError}</div>
+          ) : (
+            <div className="space-y-s text-xs">
+              <div className="flex items-center justify-between gap-s">
+                <span className="text-text-secondary">运行状态</span>
+                <span
+                  className={`font-medium ${
+                    lociGovernance?.runtimeReady
+                      ? "text-success"
+                      : lociGovernance?.lociSelected
+                        ? "text-warning"
+                        : "text-text-tertiary"
+                  }`}
+                >
+                  {lociGovernance?.runtimeReady
+                    ? "已接管"
+                    : lociGovernance?.lociSelected
+                      ? "待激活"
+                      : "未选中"}
+                </span>
+              </div>
+              <div className="flex items-center justify-between gap-s">
+                <span className="text-text-secondary">Workflow Rewriter</span>
+                <span className="font-mono text-text-primary break-all text-right">
+                  {activeWorkflowRewriter?.activePluginName ||
+                    configuredWorkflowRewriter?.pluginName ||
+                    "-"}
+                </span>
+              </div>
+              <div className="flex items-center justify-between gap-s">
+                <span className="text-text-secondary">已激活 Core Rewriter</span>
+                <span className="font-mono text-text-primary">{activeRewriterCount}</span>
+              </div>
+              <div className="flex items-center justify-between gap-s">
+                <span className="text-text-secondary">插件目录</span>
+                <span className="font-mono text-text-primary">
+                  {lociGovernance?.pluginDirs.length ?? 0}
+                </span>
+              </div>
+              <div className="text-text-secondary leading-relaxed break-words">
+                {lociGovernance?.statusMessage || "Loci 治理摘要尚未加载"}
+              </div>
+              {(lociGovernance?.modelPath || lociGovernance?.defaultModelDir) && (
+                <div className="font-mono text-[11px] text-text-tertiary break-words">
+                  {lociGovernance?.modelPath || lociGovernance?.defaultModelDir}
+                </div>
+              )}
+            </div>
+          )}
+          <div className="mt-s flex gap-s">
+            <button
+              type="button"
+              onClick={() => setActiveTab("diagnostics")}
+              className="px-s py-xs rounded-medium bg-bg-secondary text-xs text-text-secondary hover:bg-bg-tertiary transition-colors"
+            >
+              打开诊断
+            </button>
           </div>
         </GlassCard>
 

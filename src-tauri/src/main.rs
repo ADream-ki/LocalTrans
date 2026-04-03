@@ -148,6 +148,49 @@ fn run_cli(command: Commands) -> Result<(), AppError> {
             Some(latency_profile),
         )),
         Commands::RuntimeAdapters => emit_json(commands::system::get_runtime_adapter_inventory()),
+        Commands::LociRuntimeSnapshot { model_path } => {
+            emit_json(commands::loci_runtime::get_loci_runtime_snapshot(Some(
+                commands::loci_runtime::LociSnapshotRequest {
+                    model_path: model_path.map(|p| p.display().to_string()),
+                },
+            )))
+        }
+        Commands::LociGovernanceSnapshot { model_path } => {
+            emit_json(commands::loci_runtime::get_loci_governance_snapshot(Some(
+                commands::loci_runtime::LociSnapshotRequest {
+                    model_path: model_path.map(|p| p.display().to_string()),
+                },
+            )))
+        }
+        Commands::LociRewriterInventory { model_path } => {
+            emit_json(commands::loci_runtime::get_loci_rewriter_inventory(Some(
+                commands::loci_runtime::LociSnapshotRequest {
+                    model_path: model_path.map(|p| p.display().to_string()),
+                },
+            )))
+        }
+        Commands::LociLoadPlugins {
+            path,
+            source_kind,
+            model_path,
+        } => emit_json(commands::loci_runtime::load_loci_plugins(
+            commands::loci_runtime::LoadLociPluginsRequest {
+                model_path: model_path.map(|p| p.display().to_string()),
+                path: path.display().to_string(),
+                source_kind,
+            },
+        )),
+        Commands::LociActivateRewriter {
+            component,
+            plugin_name,
+            model_path,
+        } => emit_json(commands::loci_runtime::activate_loci_rewriter(
+            commands::loci_runtime::ActivateLociRewriterRequest {
+                model_path: model_path.map(|p| p.display().to_string()),
+                component,
+                plugin_name,
+            },
+        )),
         Commands::SessionPause => emit_json(commands::session::pause_session_cli()),
         Commands::SessionResume => emit_json(commands::session::resume_session_cli()),
         Commands::SessionStop => emit_json(commands::session::stop_session_cli()),
@@ -244,6 +287,33 @@ fn to_ipc_command(command: &Commands) -> IpcCommand {
         Commands::RuntimeAdapters => IpcCommand::Call {
             name: "get_runtime_adapter_inventory".to_string(),
             args: serde_json::json!({}),
+        },
+        Commands::LociRuntimeSnapshot { model_path } => IpcCommand::LociRuntimeSnapshot {
+            model_path: model_path.as_ref().map(|p| p.display().to_string()),
+        },
+        Commands::LociGovernanceSnapshot { model_path } => IpcCommand::LociGovernanceSnapshot {
+            model_path: model_path.as_ref().map(|p| p.display().to_string()),
+        },
+        Commands::LociRewriterInventory { model_path } => IpcCommand::LociRewriterInventory {
+            model_path: model_path.as_ref().map(|p| p.display().to_string()),
+        },
+        Commands::LociLoadPlugins {
+            path,
+            source_kind,
+            model_path,
+        } => IpcCommand::LociLoadPlugins {
+            path: path.display().to_string(),
+            source_kind: source_kind.clone(),
+            model_path: model_path.as_ref().map(|p| p.display().to_string()),
+        },
+        Commands::LociActivateRewriter {
+            component,
+            plugin_name,
+            model_path,
+        } => IpcCommand::LociActivateRewriter {
+            component: component.clone(),
+            plugin_name: plugin_name.clone(),
+            model_path: model_path.as_ref().map(|p| p.display().to_string()),
         },
         Commands::SessionPause => IpcCommand::SessionPause,
         Commands::SessionResume => IpcCommand::SessionResume,

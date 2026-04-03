@@ -59,6 +59,34 @@ pub enum Commands {
         latency_profile: String,
     },
     RuntimeAdapters,
+    LociRuntimeSnapshot {
+        #[arg(long)]
+        model_path: Option<PathBuf>,
+    },
+    LociGovernanceSnapshot {
+        #[arg(long)]
+        model_path: Option<PathBuf>,
+    },
+    LociRewriterInventory {
+        #[arg(long)]
+        model_path: Option<PathBuf>,
+    },
+    LociLoadPlugins {
+        #[arg(long)]
+        path: PathBuf,
+        #[arg(long)]
+        source_kind: Option<String>,
+        #[arg(long)]
+        model_path: Option<PathBuf>,
+    },
+    LociActivateRewriter {
+        #[arg(long)]
+        component: String,
+        #[arg(long)]
+        plugin_name: String,
+        #[arg(long)]
+        model_path: Option<PathBuf>,
+    },
     SessionPause,
     SessionResume,
     SessionStop,

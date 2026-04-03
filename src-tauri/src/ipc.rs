@@ -45,6 +45,25 @@ pub enum IpcCommand {
     SessionPause,
     SessionResume,
     SessionStop,
+    LociRuntimeSnapshot {
+        model_path: Option<String>,
+    },
+    LociGovernanceSnapshot {
+        model_path: Option<String>,
+    },
+    LociRewriterInventory {
+        model_path: Option<String>,
+    },
+    LociLoadPlugins {
+        path: String,
+        source_kind: Option<String>,
+        model_path: Option<String>,
+    },
+    LociActivateRewriter {
+        component: String,
+        plugin_name: String,
+        model_path: Option<String>,
+    },
     SessionStatus,
     SessionStats,
     SessionHistory {
@@ -266,6 +285,43 @@ fn execute(command: IpcCommand, app: AppHandle) -> AppResult<Value> {
             commands::session::stop_session(app)?;
             to_json(commands::session::get_session_status())
         }
+        IpcCommand::LociRuntimeSnapshot { model_path } => {
+            to_json(commands::loci_runtime::get_loci_runtime_snapshot(Some(
+                commands::loci_runtime::LociSnapshotRequest { model_path },
+            )))
+        }
+        IpcCommand::LociGovernanceSnapshot { model_path } => {
+            to_json(commands::loci_runtime::get_loci_governance_snapshot(Some(
+                commands::loci_runtime::LociSnapshotRequest { model_path },
+            )))
+        }
+        IpcCommand::LociRewriterInventory { model_path } => {
+            to_json(commands::loci_runtime::get_loci_rewriter_inventory(Some(
+                commands::loci_runtime::LociSnapshotRequest { model_path },
+            )))
+        }
+        IpcCommand::LociLoadPlugins {
+            path,
+            source_kind,
+            model_path,
+        } => to_json(commands::loci_runtime::load_loci_plugins(
+            commands::loci_runtime::LoadLociPluginsRequest {
+                model_path,
+                path,
+                source_kind,
+            },
+        )),
+        IpcCommand::LociActivateRewriter {
+            component,
+            plugin_name,
+            model_path,
+        } => to_json(commands::loci_runtime::activate_loci_rewriter(
+            commands::loci_runtime::ActivateLociRewriterRequest {
+                model_path,
+                component,
+                plugin_name,
+            },
+        )),
         IpcCommand::SessionStatus => to_json(commands::session::get_session_status()),
         IpcCommand::SessionStats => to_json(commands::session::get_session_stats()),
         IpcCommand::SessionHistory { count } => {

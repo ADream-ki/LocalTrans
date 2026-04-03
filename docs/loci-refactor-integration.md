@@ -64,16 +64,25 @@ The host now has backend commands for the Loci runtime:
 These can be reached from:
 
 - Tauri invoke commands
-- the existing CLI bridge via `localtrans.exe call --name ...`
+- dedicated CLI subcommands
+- the existing generic CLI bridge via `localtrans.exe call --name ...`
 
 Example:
 
 ```powershell
+localtrans.exe loci-runtime-snapshot
+localtrans.exe loci-governance-snapshot
+localtrans.exe loci-rewriter-inventory
+localtrans.exe loci-load-plugins --path D:\plugins\loci --source-kind directory
+localtrans.exe loci-activate-rewriter --component workflow --plugin-name my-workflow-plugin
+
 localtrans.exe call --name get_loci_runtime_snapshot --args-json "{}"
 localtrans.exe call --name get_loci_governance_snapshot --args-json "{}"
 localtrans.exe call --name load_loci_plugins --args-json "{\"path\":\"D:\\\\plugins\\\\loci\",\"source_kind\":\"directory\"}"
 localtrans.exe call --name activate_loci_rewriter --args-json "{\"component\":\"inference\",\"plugin_name\":\"my-inference-plugin\"}"
 ```
+
+The dedicated CLI commands are the preferred operational surface for Loci governance now that `LocalTrans` treats `Loci-refactor` as the core plugin-governed runtime.
 
 ## Shared config keys
 
@@ -108,6 +117,7 @@ Current behavior:
 - backend runtime diagnostics now expose adapter inventory plus selected ASR/MT/TTS routes
 - when backend TTS is disabled, the realtime pipeline now uses a no-op TTS adapter instead of failing on an unavailable concrete TTS backend
 - diagnostics now expose a dedicated Loci governance snapshot: selected engine state, resolved model path, configured plugin dirs, configured core rewriters, and current active rewriter inventory
+- session UI now exposes a lightweight Loci governance summary so workflow/plugin state is visible during live operation instead of only on the diagnostics page
 
 Scaffolded engine slots:
 
