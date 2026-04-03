@@ -51,6 +51,7 @@ pub fn run() -> Result<(), tauri::Error> {
             commands::system::open_url,
             commands::loci_runtime::get_loci_runtime_snapshot,
             commands::loci_runtime::get_loci_rewriter_inventory,
+            commands::loci_runtime::get_loci_governance_snapshot,
             commands::loci_runtime::load_loci_plugins,
             commands::loci_runtime::activate_loci_rewriter,
             commands::tts::get_tts_voices,

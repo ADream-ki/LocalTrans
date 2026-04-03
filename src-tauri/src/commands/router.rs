@@ -204,6 +204,14 @@ pub fn execute_named(name: &str, args: Value, app: Option<AppHandle>) -> AppResu
             ))?,
         )
         .map_err(|e| AppError::Io(e.to_string()))?),
+        "get_loci_governance_snapshot" => Ok(serde_json::to_value(
+            super::loci_runtime::get_loci_governance_snapshot(Some(
+                super::loci_runtime::LociSnapshotRequest {
+                    model_path: arg_opt_str(&args, "model_path"),
+                },
+            ))?,
+        )
+        .map_err(|e| AppError::Io(e.to_string()))?),
         "load_loci_plugins" => Ok(serde_json::to_value(super::loci_runtime::load_loci_plugins(
             super::loci_runtime::LoadLociPluginsRequest {
                 model_path: arg_opt_str(&args, "model_path"),

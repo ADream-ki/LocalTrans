@@ -53,6 +53,29 @@ interface RuntimeAdapterInventory {
   tts: RuntimeAdapterDescriptor[];
 }
 
+interface CoreRewriterInventoryStatus {
+  component: string;
+  activePluginName?: string | null;
+  availablePlugins: string[];
+}
+
+interface ConfiguredLociRewriterTarget {
+  component: string;
+  pluginName: string;
+}
+
+interface LociGovernanceSnapshot {
+  translationEngine: string;
+  lociSelected: boolean;
+  runtimeReady: boolean;
+  statusMessage: string;
+  defaultModelDir: string;
+  modelPath?: string | null;
+  pluginDirs: string[];
+  configuredRewriterTargets: ConfiguredLociRewriterTarget[];
+  activeRewriterInventory: CoreRewriterInventoryStatus[];
+}
+
 interface TtsSystemDoctorPlaybackResult {
   systemOk: boolean;
   systemDetail: string;
@@ -98,6 +121,7 @@ function DiagnosticsPage() {
 
       const runtime = await invoke<RuntimeStatus>("get_runtime_status");
       const adapterInventory = await invoke<RuntimeAdapterInventory>("get_runtime_adapter_inventory");
+      const lociGovernance = await invoke<LociGovernanceSnapshot>("get_loci_governance_snapshot");
       const selectedAsrAdapter = adapterInventory.asr.find((item) => item.selected);
       const selectedTranslationAdapter = adapterInventory.translation.find((item) => item.selected);
       const selectedTtsAdapter = adapterInventory.tts.find((item) => item.selected);
@@ -145,6 +169,55 @@ function DiagnosticsPage() {
               key: "TTS Adapter",
               value: selectedTtsAdapter?.label || "-",
               status: selectedTtsAdapter?.available ? "ok" : "warning",
+            },
+          ],
+        },
+        {
+          title: "Loci 治理",
+          icon: <Cpu size={18} className="text-primary" />,
+          items: [
+            {
+              key: "Loci 选中状态",
+              value: lociGovernance.lociSelected ? "已选中" : "未选中",
+              status: lociGovernance.lociSelected ? "ok" : "warning",
+            },
+            {
+              key: "治理状态",
+              value: lociGovernance.runtimeReady ? "运行中" : "未激活",
+              status: lociGovernance.runtimeReady ? "ok" : "warning",
+            },
+            {
+              key: "状态说明",
+              value: lociGovernance.statusMessage || "-",
+              status: lociGovernance.runtimeReady ? "ok" : "warning",
+            },
+            {
+              key: "Loci 模型",
+              value: lociGovernance.modelPath || lociGovernance.defaultModelDir || "-",
+              status: lociGovernance.runtimeReady ? "ok" : "warning",
+            },
+            {
+              key: "插件目录数",
+              value: String(lociGovernance.pluginDirs.length),
+              status: lociGovernance.pluginDirs.length > 0 ? "ok" : "warning",
+            },
+            {
+              key: "配置的 Core Rewriter",
+              value:
+                lociGovernance.configuredRewriterTargets
+                  .map((item) => `${item.component}=${item.pluginName}`)
+                  .join(", ") || "无",
+              status:
+                lociGovernance.configuredRewriterTargets.length > 0 ? "ok" : "warning",
+            },
+            {
+              key: "当前激活 Rewriter",
+              value:
+                lociGovernance.activeRewriterInventory
+                  .map((item) => `${item.component}=${item.activePluginName || "-"}`)
+                  .join(", ") || "无",
+              status:
+                lociGovernance.activeRewriterInventory.length > 0 ? "ok" : "warning",
             },
           ],
         },

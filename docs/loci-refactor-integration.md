@@ -57,6 +57,7 @@ The host now has backend commands for the Loci runtime:
 
 - `get_loci_runtime_snapshot`
 - `get_loci_rewriter_inventory`
+- `get_loci_governance_snapshot`
 - `load_loci_plugins`
 - `activate_loci_rewriter`
 
@@ -69,6 +70,7 @@ Example:
 
 ```powershell
 localtrans.exe call --name get_loci_runtime_snapshot --args-json "{}"
+localtrans.exe call --name get_loci_governance_snapshot --args-json "{}"
 localtrans.exe call --name load_loci_plugins --args-json "{\"path\":\"D:\\\\plugins\\\\loci\",\"source_kind\":\"directory\"}"
 localtrans.exe call --name activate_loci_rewriter --args-json "{\"component\":\"inference\",\"plugin_name\":\"my-inference-plugin\"}"
 ```
@@ -105,6 +107,7 @@ Current behavior:
 - TTS is instantiated through a runtime adapter factory instead of a hardcoded command bridge
 - backend runtime diagnostics now expose adapter inventory plus selected ASR/MT/TTS routes
 - when backend TTS is disabled, the realtime pipeline now uses a no-op TTS adapter instead of failing on an unavailable concrete TTS backend
+- diagnostics now expose a dedicated Loci governance snapshot: selected engine state, resolved model path, configured plugin dirs, configured core rewriters, and current active rewriter inventory
 
 Scaffolded engine slots:
 
