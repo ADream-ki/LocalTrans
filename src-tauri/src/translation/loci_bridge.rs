@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 use anyhow::Context;
 
 #[cfg(feature = "loci-backend")]
-use loci::inference::{GenerationParams, InferenceEngine};
+use loci::{GenerationParams, InferenceEngine};
 
 /// Loci-based translator that uses local LLM for translation
 pub struct LociTranslator {
@@ -261,7 +261,8 @@ impl Translator for LociTranslator {
             }
 
             let engine = InferenceEngine::builder()
-                .model_path(model_path.to_str().context("Invalid model path")?)
+                .with_backend_name("llama.cpp")
+                .with_model_path(model_path.to_str().context("Invalid model path")?)
                 .build()
                 .context("Failed to initialize Loci engine")?;
 
@@ -309,7 +310,7 @@ impl Translator for LociTranslator {
                 };
 
                 for attempt in 0..2 {
-                    match engine.generate(&prompt, params.clone()) {
+                    match engine.generate_legacy(&prompt, params.clone()) {
                         Ok(result) => {
                             let translated =
                                 Self::clean_translation_output(&result, text, target_lang);
@@ -411,11 +412,13 @@ mod tests {
 
     #[test]
     fn test_clean_output() {
-        let out = LociTranslator::clean_translation_output("Translation: 你好世界");
+        let out = LociTranslator::clean_translation_output("Translation: 你好世界", "Hello world", "zh");
         assert_eq!(out, "你好世界");
 
         let out = LociTranslator::clean_translation_output(
             "会议明天上午9:30开始，请携带身份证。 Translation: 会议明天上午9:30开始，请携带身份证。",
+            "The meeting starts at 9:30 tomorrow morning, please bring your ID.",
+            "zh",
         );
         assert_eq!(out, "会议明天上午9:30开始，请携带身份证。");
     }

@@ -29,6 +29,26 @@ use super::events::{
 };
 use crate::session_bus;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LatencyProfile {
+    LowLatency,
+    Balanced,
+    HighAccuracy,
+}
+
+impl LatencyProfile {
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "low-latency" | "low_latency" | "low" | "realtime" => Some(Self::LowLatency),
+            "balanced" | "balance" | "default" => Some(Self::Balanced),
+            "high-accuracy" | "high_accuracy" | "high" | "accuracy" => {
+                Some(Self::HighAccuracy)
+            }
+            _ => None,
+        }
+    }
+}
+
 /// Configuration for the realtime pipeline
 #[derive(Debug, Clone)]
 pub struct PipelineConfig {
@@ -76,6 +96,8 @@ pub struct PipelineConfig {
     pub tts_volume: f32,
     /// TTS output device id
     pub tts_output_device: Option<String>,
+    /// Selected custom voice profile id
+    pub custom_voice_profile_id: Option<String>,
     /// Streaming TTS emit interval
     pub stream_tts_interval_ms: u64,
     /// Minimum translated chars to trigger streaming TTS
@@ -84,22 +106,22 @@ pub struct PipelineConfig {
 
 impl Default for PipelineConfig {
     fn default() -> Self {
-        Self {
+        let mut cfg = Self {
             source_lang: "en".to_string(),
             target_lang: "zh".to_string(),
             input_device: None,
             peer_input_device: None,
             bidirectional: false,
-            vad_frame_ms: 30,
+            vad_frame_ms: 20,
             vad_threshold: 0.01,
-            min_speech_duration_ms: 260,
+            min_speech_duration_ms: 180,
             max_segment_duration_ms: 30000,
             loci_enhanced: false,
             translation_engine: "nllb".to_string(),
-            chunk_size: 480, // 30ms at 16kHz
+            chunk_size: 320, // 20ms at 16kHz
             max_history: 500,
-            stream_translation_interval_ms: 450,
-            stream_translation_min_chars: 4,
+            stream_translation_interval_ms: 320,
+            stream_translation_min_chars: 3,
             tts_enabled: true,
             tts_auto_play: true,
             tts_engine: "sherpa-melo".to_string(),
@@ -107,13 +129,48 @@ impl Default for PipelineConfig {
             tts_rate: 1.0,
             tts_volume: 1.0,
             tts_output_device: None,
-            stream_tts_interval_ms: 900,
-            stream_tts_min_chars: 8,
-        }
+            custom_voice_profile_id: None,
+            stream_tts_interval_ms: 650,
+            stream_tts_min_chars: 6,
+        };
+        cfg.apply_latency_profile(LatencyProfile::Balanced);
+        cfg
     }
 }
 
 impl PipelineConfig {
+    pub fn apply_latency_profile(&mut self, profile: LatencyProfile) {
+        match profile {
+            LatencyProfile::LowLatency => {
+                self.vad_frame_ms = 20;
+                self.min_speech_duration_ms = 160;
+                self.chunk_size = 320; // 20ms @16kHz
+                self.stream_translation_interval_ms = 260;
+                self.stream_translation_min_chars = 2;
+                self.stream_tts_interval_ms = 520;
+                self.stream_tts_min_chars = 4;
+            }
+            LatencyProfile::Balanced => {
+                self.vad_frame_ms = 20;
+                self.min_speech_duration_ms = 180;
+                self.chunk_size = 320; // 20ms @16kHz
+                self.stream_translation_interval_ms = 320;
+                self.stream_translation_min_chars = 3;
+                self.stream_tts_interval_ms = 650;
+                self.stream_tts_min_chars = 6;
+            }
+            LatencyProfile::HighAccuracy => {
+                self.vad_frame_ms = 30;
+                self.min_speech_duration_ms = 260;
+                self.chunk_size = 480; // 30ms @16kHz
+                self.stream_translation_interval_ms = 520;
+                self.stream_translation_min_chars = 6;
+                self.stream_tts_interval_ms = 900;
+                self.stream_tts_min_chars = 10;
+            }
+        }
+    }
+
     /// Create config for Chinese to English translation
     pub fn zh_to_en() -> Self {
         Self {
@@ -1057,6 +1114,7 @@ fn spawn_pipeline_tts(config: &PipelineConfig, text: String) {
         volume: Some(config.tts_volume),
         output_device: config.tts_output_device.clone(),
         custom_voice: None,
+        custom_voice_profile_id: config.custom_voice_profile_id.clone(),
     };
 
     tokio::task::spawn_blocking(move || {

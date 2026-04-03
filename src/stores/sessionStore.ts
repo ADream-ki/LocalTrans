@@ -101,6 +101,7 @@ type BackendSessionConfig = {
   ttsRate?: number | null;
   ttsVolume?: number | null;
   ttsOutputDevice?: string | null;
+  customVoiceProfileId?: string | null;
   streamTtsIntervalMs?: number | null;
   streamTtsMinChars?: number | null;
 };
@@ -170,6 +171,10 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       ttsRate: settings.ttsRate,
       ttsVolume: settings.ttsVolume,
       ttsOutputDevice: settings.ttsOutputDevice,
+      customVoiceProfileId:
+        settings.ttsEngine === "custom" && settings.customVoiceEnabled
+          ? settings.customVoiceProfileId
+          : null,
       streamTtsIntervalMs: settings.streamTtsIntervalMs,
       streamTtsMinChars: settings.streamTtsMinChars,
     };

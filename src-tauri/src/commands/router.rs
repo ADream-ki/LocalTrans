@@ -74,6 +74,11 @@ pub fn execute_named(
                         vad_threshold: None,
                         stream_translation_interval_ms: None,
                         stream_translation_min_chars: None,
+                        latency_profile: args
+                            .get("latency_profile")
+                            .or_else(|| args.get("latencyProfile"))
+                            .and_then(Value::as_str)
+                            .map(ToString::to_string),
                         tts_enabled: None,
                         tts_auto_play: None,
                         tts_engine: None,
@@ -81,6 +86,7 @@ pub fn execute_named(
                         tts_rate: None,
                         tts_volume: None,
                         tts_output_device: None,
+                        custom_voice_profile_id: None,
                         stream_tts_interval_ms: None,
                         stream_tts_min_chars: None,
                     },
@@ -92,6 +98,10 @@ pub fn execute_named(
                     arg_str(&args, "source_lang")?.to_string(),
                     arg_str(&args, "target_lang")?.to_string(),
                     arg_bool(&args, "bidirectional", false),
+                    args.get("latency_profile")
+                        .or_else(|| args.get("latencyProfile"))
+                        .and_then(Value::as_str)
+                        .map(ToString::to_string),
                 )?)
                 .map_err(|e| AppError::Io(e.to_string()))?)
             }
@@ -202,6 +212,30 @@ pub fn execute_named(
                 args.get("models_dir")
                     .and_then(Value::as_str)
                     .map(ToString::to_string),
+            )?)
+            .map_err(|e| AppError::Io(e.to_string()))?,
+        ),
+        "list_custom_voice_profiles" => Ok(
+            serde_json::to_value(super::tts::list_custom_voice_profiles()?)
+                .map_err(|e| AppError::Io(e.to_string()))?,
+        ),
+        "save_custom_voice_profile" => {
+            let req = args
+                .get("request")
+                .cloned()
+                .ok_or_else(|| AppError::InvalidState("missing request".to_string()))?;
+            let parsed: super::tts::SaveCustomVoiceProfileRequest =
+                serde_json::from_value(req).map_err(|e| AppError::InvalidState(e.to_string()))?;
+            Ok(serde_json::to_value(super::tts::save_custom_voice_profile(parsed)?)
+                .map_err(|e| AppError::Io(e.to_string()))?)
+        }
+        "delete_custom_voice_profile" => {
+            super::tts::delete_custom_voice_profile(arg_str(&args, "profile_id")?.to_string())?;
+            Ok(Value::Null)
+        }
+        "validate_custom_voice_profile" => Ok(
+            serde_json::to_value(super::tts::validate_custom_voice_profile(
+                arg_str(&args, "profile_id")?.to_string(),
             )?)
             .map_err(|e| AppError::Io(e.to_string()))?,
         ),

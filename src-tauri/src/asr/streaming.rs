@@ -81,15 +81,13 @@ impl Default for StreamingConfig {
     fn default() -> Self {
         Self {
             sample_rate: 16000,
-            min_speech_duration_ms: 220,
+            min_speech_duration_ms: 180,
             max_speech_duration_ms: 30000, // 30 seconds max
-            silence_duration_ms: 350,
+            silence_duration_ms: 220,
             chunk_size: 1600, // 100ms at 16kHz
             enable_partial_results: true,
-            // Calling a full offline decode too frequently is expensive.
-            // A slightly slower cadence keeps CPU usage stable while still
-            // feeling "live" in the UI.
-            partial_result_interval_ms: 220,
+            // Faster partial cadence for lower perceived latency.
+            partial_result_interval_ms: 140,
             vad_sensitivity: 0.5,
             vad_energy_threshold: 0.01,
             auto_reset_timeout_ms: 5000,
@@ -256,6 +254,13 @@ impl StreamingAsrEngine {
         let vad_frame_duration_ms = 30;
         let mut vad = VadDetector::new(streaming_config.sample_rate, vad_frame_duration_ms);
         vad.set_threshold(streaming_config.vad_energy_threshold);
+        let frame_ms = vad_frame_duration_ms.max(1) as usize;
+        let min_silence_frames =
+            (streaming_config.silence_duration_ms.max(80) as usize).div_ceil(frame_ms);
+        let min_speech_window_ms = streaming_config.min_speech_duration_ms.min(140) as usize;
+        let min_speech_frames = min_speech_window_ms.div_ceil(frame_ms).max(1);
+        vad.set_min_silence_frames(min_silence_frames);
+        vad.set_min_speech_frames(min_speech_frames);
 
         let chunk_size = streaming_config.chunk_size;
         let max_buffer_samples =
@@ -319,7 +324,7 @@ impl StreamingAsrEngine {
         // Check for partial result timing
         // Require a minimum amount of accumulated speech before attempting a partial decode.
         let min_partial_samples =
-            (self.config.sample_rate as usize / 2).max(self.config.chunk_size * 5);
+            (self.config.sample_rate as usize * 3 / 10).max(self.config.chunk_size * 4);
         if self.config.enable_partial_results && self.speech_buffer.len() >= min_partial_samples {
             let elapsed = self.last_partial_time.elapsed().as_millis() as u32;
             if elapsed >= self.config.partial_result_interval_ms {
@@ -401,7 +406,8 @@ impl StreamingAsrEngine {
         }
 
         // Avoid running a full decode when very little new audio arrived.
-        let min_delta_samples = (self.config.sample_rate as usize / 4).max(self.config.chunk_size);
+        let min_delta_samples =
+            (self.config.sample_rate as usize * 12 / 100).max(self.config.chunk_size / 2);
         if self
             .speech_buffer
             .len()

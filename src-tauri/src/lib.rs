@@ -52,6 +52,10 @@ pub fn run() -> Result<(), tauri::Error> {
             commands::tts::get_tts_config,
             commands::tts::get_default_tts_voice,
             commands::tts::list_custom_voice_models,
+            commands::tts::list_custom_voice_profiles,
+            commands::tts::save_custom_voice_profile,
+            commands::tts::delete_custom_voice_profile,
+            commands::tts::validate_custom_voice_profile,
             commands::tts::run_tts_system_doctor_playback,
             commands::translation::translate_text
         ])

@@ -2,7 +2,7 @@ import { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { useSettingsStore } from "../../stores/settingsStore";
 import GlassCard from "../../components/GlassCard";
-import { Zap, Target, Languages, Volume2, Gauge, Speaker, Settings, FolderOpen, AlertCircle, CheckCircle, Download, Info } from "lucide-react";
+import { Zap, Target, Languages, Volume2, Gauge, Speaker, Settings, AlertCircle, CheckCircle, Download, Info } from "lucide-react";
 
 const presets = [
   {
@@ -65,6 +65,24 @@ interface VirtualDriverCheckResult {
   download_url: string | null;
 }
 
+interface CustomVoiceProfile {
+  id: string;
+  name: string;
+  backendKind: string;
+  enabled: boolean;
+  modelPath: string;
+  language?: string | null;
+}
+
+interface SaveCustomVoiceProfileRequest {
+  id?: string;
+  name: string;
+  backendKind: string;
+  enabled?: boolean;
+  modelPath: string;
+  language?: string | null;
+}
+
 function SettingsPage() {
   const {
     sampleRate,
@@ -82,6 +100,7 @@ function SettingsPage() {
     ttsAutoPlay,
     ttsOutputDevice,
     customVoiceEnabled,
+    customVoiceProfileId,
     customVoiceModelPath,
     customVoiceModelType,
     customVoiceReferenceAudio,
@@ -101,16 +120,18 @@ function SettingsPage() {
     setTtsAutoPlay,
     setTtsOutputDevice,
     setCustomVoiceEnabled,
-    setCustomVoiceModelPath,
-    setCustomVoiceModelType,
-    setCustomVoiceReferenceAudio,
-    setCustomVoiceReferenceText,
+    setCustomVoiceProfileId,
   } = useSettingsStore();
 
   const [outputDevices, setOutputDevices] = useState<AudioDevice[]>([]);
   const [virtualDriverCheck, setVirtualDriverCheck] = useState<VirtualDriverCheckResult | null>(null);
   const [checkingDriver, setCheckingDriver] = useState(true);
   const [configSyncReady, setConfigSyncReady] = useState(false);
+  const [customVoiceProfiles, setCustomVoiceProfiles] = useState<CustomVoiceProfile[]>([]);
+  const [customProfileNameDraft, setCustomProfileNameDraft] = useState("");
+  const [customProfilePathDraft, setCustomProfilePathDraft] = useState("");
+  const [customProfileError, setCustomProfileError] = useState<string | null>(null);
+  const [customProfileSaving, setCustomProfileSaving] = useState(false);
 
   useEffect(() => {
     // Check virtual audio driver
@@ -129,6 +150,22 @@ function SettingsPage() {
     invoke<AudioDevice[]>("get_tts_output_devices")
       .then((devices) => setOutputDevices(devices))
       .catch((err) => console.error("Failed to load devices:", err));
+  }, []);
+
+  const loadCustomVoiceProfiles = async () => {
+    try {
+      const profiles = await invoke<CustomVoiceProfile[]>("list_custom_voice_profiles");
+      setCustomVoiceProfiles(profiles);
+      if (profiles.length === 0 && customVoiceProfileId) {
+        setCustomVoiceProfileId(null);
+      }
+    } catch (err) {
+      console.error("Failed to load custom voice profiles:", err);
+    }
+  };
+
+  useEffect(() => {
+    void loadCustomVoiceProfiles();
   }, []);
 
   // Load backend-shared config on page mount so CLI/GUI can share the same settings source.
@@ -152,6 +189,9 @@ function SettingsPage() {
         if (typeof cfg.ttsAutoPlay === "boolean") setTtsAutoPlay(cfg.ttsAutoPlay);
         if (typeof cfg.ttsOutputDevice === "string" || cfg.ttsOutputDevice === null) {
           setTtsOutputDevice((cfg.ttsOutputDevice as string | null) ?? null);
+        }
+        if (typeof cfg.customVoiceProfileId === "string" || cfg.customVoiceProfileId === null) {
+          setCustomVoiceProfileId((cfg.customVoiceProfileId as string | null) ?? null);
         }
       })
       .catch(() => {})
@@ -182,6 +222,7 @@ function SettingsPage() {
       ttsAutoPlay,
       ttsOutputDevice,
       customVoiceEnabled,
+      customVoiceProfileId,
       customVoiceModelPath,
       customVoiceModelType,
       customVoiceReferenceAudio,
@@ -205,6 +246,7 @@ function SettingsPage() {
     ttsAutoPlay,
     ttsOutputDevice,
     customVoiceEnabled,
+    customVoiceProfileId,
     customVoiceModelPath,
     customVoiceModelType,
     customVoiceReferenceAudio,
@@ -241,6 +283,61 @@ function SettingsPage() {
       console.error("Failed to recheck virtual driver:", err);
     }
     setCheckingDriver(false);
+  };
+
+  const handleSaveCustomProfile = async () => {
+    setCustomProfileError(null);
+    if (!customProfileNameDraft.trim()) {
+      setCustomProfileError("请输入音色名称");
+      return;
+    }
+    if (!customProfilePathDraft.trim()) {
+      setCustomProfileError("请输入 Piper 模型 .onnx 路径");
+      return;
+    }
+
+    setCustomProfileSaving(true);
+    try {
+      const saved = await invoke<CustomVoiceProfile>("save_custom_voice_profile", {
+        request: {
+          name: customProfileNameDraft.trim(),
+          backendKind: "piper",
+          enabled: true,
+          modelPath: customProfilePathDraft.trim(),
+          language: targetLanguageFromVoice(ttsVoice),
+        } satisfies SaveCustomVoiceProfileRequest,
+      });
+      setCustomVoiceEnabled(true);
+      setCustomVoiceProfileId(saved.id);
+      setCustomProfileNameDraft("");
+      setCustomProfilePathDraft("");
+      await loadCustomVoiceProfiles();
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      setCustomProfileError(msg);
+    } finally {
+      setCustomProfileSaving(false);
+    }
+  };
+
+  const handleDeleteCustomProfile = async (profileId: string) => {
+    try {
+      await invoke("delete_custom_voice_profile", { profileId });
+      if (customVoiceProfileId === profileId) {
+        setCustomVoiceProfileId(null);
+      }
+      await loadCustomVoiceProfiles();
+    } catch (err) {
+      console.error("Failed to delete custom voice profile:", err);
+    }
+  };
+
+  const targetLanguageFromVoice = (voiceId: string) => {
+    if (voiceId.startsWith("zh-")) return "zh";
+    if (voiceId.startsWith("en-")) return "en";
+    if (voiceId.startsWith("ja-")) return "ja";
+    if (voiceId.startsWith("ko-")) return "ko";
+    return "multi";
   };
 
   return (
@@ -484,13 +581,13 @@ function SettingsPage() {
                   <div className="p-m bg-accent/5 rounded-large border border-accent/20 space-y-m">
                     <h3 className="text-m font-medium text-text-primary flex items-center gap-s">
                       <Settings size={16} className="text-accent" />
-                      自定义音色设置
+                      自定义音色设置（Piper v1）
                     </h3>
                     
                     <div className="flex items-center justify-between">
                       <div>
                         <div className="text-s text-text-primary">启用自定义音色</div>
-                        <div className="text-xs text-text-tertiary">使用GPT-SoVITS/RVC等</div>
+                        <div className="text-xs text-text-tertiary">当前版本先支持本地 Piper ONNX 音色</div>
                       </div>
                       <label className="relative inline-flex items-center cursor-pointer">
                         <input
@@ -505,69 +602,119 @@ function SettingsPage() {
 
                     {customVoiceEnabled && (
                       <>
+                        <div>
+                          <label className="text-xs text-text-secondary block mb-xs">当前音色 Profile</label>
+                          <select
+                            value={customVoiceProfileId || ""}
+                            onChange={(e) => setCustomVoiceProfileId(e.target.value || null)}
+                            className="select-field"
+                          >
+                            <option value="">请选择已保存的 Piper 音色</option>
+                            {customVoiceProfiles.map((profile) => (
+                              <option key={profile.id} value={profile.id}>
+                                {profile.name} ({profile.language || "multi"})
+                              </option>
+                            ))}
+                          </select>
+                          <p className="text-xs text-text-tertiary mt-xs">
+                            选中的 profile 会用于实时会话自动播报和手动试听。
+                          </p>
+                        </div>
+
                         <div className="grid grid-cols-2 gap-m">
                           <div>
-                            <label className="text-xs text-text-secondary block mb-xs">模型类型</label>
-                            <select
-                              value={customVoiceModelType}
-                              onChange={(e) => setCustomVoiceModelType(e.target.value as typeof customVoiceModelType)}
-                              className="select-field"
-                            >
-                              <option value="gpt-sovits">GPT-SoVITS</option>
-                              <option value="rvc">RVC (变声)</option>
-                              <option value="piper">Piper</option>
-                              <option value="vits">VITS</option>
-                            </select>
+                            <label className="text-xs text-text-secondary block mb-xs">新 Profile 名称</label>
+                            <input
+                              type="text"
+                              value={customProfileNameDraft}
+                              onChange={(e) => setCustomProfileNameDraft(e.target.value)}
+                              className="input-field"
+                              placeholder="例如：会议女声"
+                            />
                           </div>
                           <div>
-                            <label className="text-xs text-text-secondary block mb-xs">模型路径</label>
-                            <div className="flex gap-s">
-                              <input
-                                type="text"
-                                value={customVoiceModelPath}
-                                onChange={(e) => setCustomVoiceModelPath(e.target.value)}
-                                className="input-field flex-1"
-                                placeholder="/path/to/model.pth"
-                              />
-                              <button className="p-s rounded-medium bg-bg-tertiary hover:bg-bg-hover transition-colors">
-                                <FolderOpen size={16} className="text-text-secondary" />
-                              </button>
-                            </div>
+                            <label className="text-xs text-text-secondary block mb-xs">Piper 模型路径</label>
+                            <input
+                              type="text"
+                              value={customProfilePathDraft}
+                              onChange={(e) => setCustomProfilePathDraft(e.target.value)}
+                              className="input-field"
+                              placeholder="D:\\...\\voice.onnx"
+                            />
                           </div>
                         </div>
 
-                        {(customVoiceModelType === "gpt-sovits" || customVoiceModelType === "rvc") && (
-                          <div className="grid grid-cols-2 gap-m">
-                            <div>
-                              <label className="text-xs text-text-secondary block mb-xs">参考音频</label>
-                              <div className="flex gap-s">
-                                <input
-                                  type="text"
-                                  value={customVoiceReferenceAudio || ""}
-                                  onChange={(e) => setCustomVoiceReferenceAudio(e.target.value || null)}
-                                  className="input-field flex-1"
-                                  placeholder="/path/to/reference.wav"
-                                />
-                                <button className="p-s rounded-medium bg-bg-tertiary hover:bg-bg-hover transition-colors">
-                                  <FolderOpen size={16} className="text-text-secondary" />
-                                </button>
-                              </div>
-                            </div>
-                            <div>
-                              <label className="text-xs text-text-secondary block mb-xs">参考文本</label>
-                              <input
-                                type="text"
-                                value={customVoiceReferenceText || ""}
-                                onChange={(e) => setCustomVoiceReferenceText(e.target.value || null)}
-                                className="input-field"
-                                placeholder="参考音频对应的文本"
-                              />
-                            </div>
+                        <div className="flex items-center gap-s">
+                          <button
+                            type="button"
+                            onClick={handleSaveCustomProfile}
+                            disabled={customProfileSaving}
+                            className="px-4 py-2 rounded-medium bg-primary text-white text-sm font-medium hover:bg-primary/90 transition-colors disabled:opacity-50"
+                          >
+                            {customProfileSaving ? "保存中..." : "保存 Piper Profile"}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => void loadCustomVoiceProfiles()}
+                            className="px-4 py-2 rounded-medium bg-bg-tertiary text-text-secondary text-sm hover:bg-bg-hover transition-colors"
+                          >
+                            刷新列表
+                          </button>
+                        </div>
+
+                        {customProfileError && (
+                          <div className="text-xs text-error bg-error/5 border border-error/20 rounded-medium px-s py-s">
+                            {customProfileError}
                           </div>
                         )}
 
+                        <div className="space-y-s">
+                          {customVoiceProfiles.length === 0 ? (
+                            <div className="text-xs text-text-tertiary">
+                              还没有已保存的 Piper 音色。先输入名称和 `.onnx` 路径后保存。
+                            </div>
+                          ) : (
+                            customVoiceProfiles.map((profile) => (
+                              <div
+                                key={profile.id}
+                                className={`p-s rounded-medium border ${
+                                  customVoiceProfileId === profile.id
+                                    ? "border-primary bg-primary/5"
+                                    : "border-bg-tertiary bg-bg-secondary/40"
+                                }`}
+                              >
+                                <div className="flex items-start justify-between gap-s">
+                                  <div className="min-w-0">
+                                    <div className="text-sm font-medium text-text-primary">{profile.name}</div>
+                                    <div className="text-xs text-text-secondary break-all">{profile.modelPath}</div>
+                                  </div>
+                                  <div className="flex items-center gap-xs">
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        setCustomVoiceProfileId(profile.id);
+                                        setCustomVoiceEnabled(true);
+                                      }}
+                                      className="px-3 py-1.5 rounded-medium bg-primary/10 text-primary text-xs hover:bg-primary/20 transition-colors"
+                                    >
+                                      设为当前
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => void handleDeleteCustomProfile(profile.id)}
+                                      className="px-3 py-1.5 rounded-medium bg-error/10 text-error text-xs hover:bg-error/20 transition-colors"
+                                    >
+                                      删除
+                                    </button>
+                                  </div>
+                                </div>
+                              </div>
+                            ))
+                          )}
+                        </div>
+
                         <p className="text-xs text-text-tertiary">
-                          💡 提示：GPT-SoVITS需要启动本地API服务(默认端口9880)，RVC需要启动WebUI(默认端口7865)
+                          v1 只接入本地 Piper ONNX 音色，目的是先把实时自动播报链路稳定打通。
                         </p>
                       </>
                     )}

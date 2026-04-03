@@ -43,6 +43,7 @@ export interface SettingsState {
   
   // Custom Voice
   customVoiceEnabled: boolean;
+  customVoiceProfileId: string | null;
   customVoiceModelPath: string;
   customVoiceModelType: "gpt-sovits" | "rvc" | "piper" | "vits";
   customVoiceReferenceAudio: string | null;
@@ -93,6 +94,7 @@ export interface SettingsState {
   setPeerTtsOutputDevice: (device: string | null) => void;
   
   setCustomVoiceEnabled: (enabled: boolean) => void;
+  setCustomVoiceProfileId: (id: string | null) => void;
   setCustomVoiceModelPath: (path: string) => void;
   setCustomVoiceModelType: (type: SettingsState["customVoiceModelType"]) => void;
   setCustomVoiceReferenceAudio: (path: string | null) => void;
@@ -152,6 +154,7 @@ export const useSettingsStore = create<SettingsState>()(
       
       // Custom Voice
       customVoiceEnabled: false,
+      customVoiceProfileId: null,
       customVoiceModelPath: "",
       customVoiceModelType: "gpt-sovits",
       customVoiceReferenceAudio: null,
@@ -203,6 +206,7 @@ export const useSettingsStore = create<SettingsState>()(
       setPeerTtsOutputDevice: (device) => set({ peerTtsOutputDevice: device }),
       
       setCustomVoiceEnabled: (enabled) => set({ customVoiceEnabled: enabled }),
+      setCustomVoiceProfileId: (id) => set({ customVoiceProfileId: id }),
       setCustomVoiceModelPath: (path) => set({ customVoiceModelPath: path }),
       setCustomVoiceModelType: (type) => set({ customVoiceModelType: type }),
       setCustomVoiceReferenceAudio: (path) => set({ customVoiceReferenceAudio: path }),

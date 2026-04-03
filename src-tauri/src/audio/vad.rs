@@ -23,6 +23,10 @@ pub struct VadDetector {
 impl VadDetector {
     pub fn new(sample_rate: u32, frame_duration_ms: u32) -> Self {
         let frame_size = (sample_rate as f32 * frame_duration_ms as f32 / 1000.0) as usize;
+        let frame_ms = frame_duration_ms.max(1) as usize;
+        // Defaults tuned for lower end-to-end latency while keeping stability.
+        let min_speech_frames = (70usize.div_ceil(frame_ms)).max(1);
+        let min_silence_frames = (220usize.div_ceil(frame_ms)).max(1);
 
         Self {
             threshold: 0.01,
@@ -30,14 +34,22 @@ impl VadDetector {
             energy_history: VecDeque::with_capacity(10),
             speech_frames: 0,
             silence_frames: 0,
-            min_speech_frames: 3,
-            min_silence_frames: 15,
+            min_speech_frames,
+            min_silence_frames,
             is_speech: false,
         }
     }
 
     pub fn set_threshold(&mut self, threshold: f32) {
         self.threshold = threshold;
+    }
+
+    pub fn set_min_speech_frames(&mut self, frames: usize) {
+        self.min_speech_frames = frames.max(1);
+    }
+
+    pub fn set_min_silence_frames(&mut self, frames: usize) {
+        self.min_silence_frames = frames.max(1);
     }
 
     pub fn process(&mut self, frame: &[f32]) -> VadResult {

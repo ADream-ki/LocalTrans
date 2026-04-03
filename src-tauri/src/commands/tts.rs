@@ -34,6 +34,7 @@ pub struct TtsRequest {
     pub volume: Option<f32>,
     pub output_device: Option<String>,
     pub custom_voice: Option<CustomVoiceRequest>,
+    pub custom_voice_profile_id: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -72,6 +73,47 @@ pub struct CustomVoiceModelInfo {
     pub model_type: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CustomVoiceProfile {
+    pub id: String,
+    pub name: String,
+    pub backend_kind: String,
+    pub enabled: bool,
+    pub model_path: String,
+    pub language: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SaveCustomVoiceProfileRequest {
+    pub id: Option<String>,
+    pub name: String,
+    pub backend_kind: String,
+    pub enabled: Option<bool>,
+    pub model_path: String,
+    pub language: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CustomVoiceProfileValidation {
+    pub ok: bool,
+    pub reason: String,
+}
+
+fn fallback_voice_for_profile(profile: &CustomVoiceProfile, requested_voice: &str) -> String {
+    if requested_voice.contains("Neural") {
+        return requested_voice.to_string();
+    }
+    profile
+        .language
+        .as_deref()
+        .and_then(tts::get_default_voice)
+        .unwrap_or("en-US-JennyNeural")
+        .to_string()
+}
+
 fn to_app_error<E: std::fmt::Display>(e: E) -> AppError {
     AppError::InvalidState(e.to_string())
 }
@@ -81,6 +123,132 @@ fn runtime() -> AppResult<tokio::runtime::Runtime> {
         .enable_all()
         .build()
         .map_err(to_app_error)
+}
+
+fn custom_voice_profiles_path() -> PathBuf {
+    dirs::data_local_dir()
+        .unwrap_or_else(std::env::temp_dir)
+        .join("LocalTrans")
+        .join("custom-voice-profiles.json")
+}
+
+fn load_custom_voice_profiles() -> AppResult<Vec<CustomVoiceProfile>> {
+    let path = custom_voice_profiles_path();
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+    let text = fs::read_to_string(path)?;
+    let profiles =
+        serde_json::from_str::<Vec<CustomVoiceProfile>>(&text).unwrap_or_else(|_| Vec::new());
+    Ok(profiles)
+}
+
+fn save_custom_voice_profiles(profiles: &[CustomVoiceProfile]) -> AppResult<()> {
+    let path = custom_voice_profiles_path();
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let text =
+        serde_json::to_string_pretty(profiles).map_err(|e| AppError::Io(e.to_string()))?;
+    fs::write(path, text)?;
+    Ok(())
+}
+
+fn validate_profile(profile: &CustomVoiceProfile) -> CustomVoiceProfileValidation {
+    if profile.backend_kind != "piper" {
+        return CustomVoiceProfileValidation {
+            ok: false,
+            reason: format!("Unsupported backend kind: {}", profile.backend_kind),
+        };
+    }
+
+    let model_path = PathBuf::from(&profile.model_path);
+    if !model_path.exists() {
+        return CustomVoiceProfileValidation {
+            ok: false,
+            reason: format!("Model file not found: {}", model_path.display()),
+        };
+    }
+    if model_path.extension().and_then(|e| e.to_str()) != Some("onnx") {
+        return CustomVoiceProfileValidation {
+            ok: false,
+            reason: "Piper profile expects an .onnx model file".to_string(),
+        };
+    }
+
+    CustomVoiceProfileValidation {
+        ok: true,
+        reason: "ok".to_string(),
+    }
+}
+
+fn resolve_custom_voice_profile(profile_id: &str) -> AppResult<CustomVoiceProfile> {
+    let profiles = load_custom_voice_profiles()?;
+    profiles
+        .into_iter()
+        .find(|p| p.id == profile_id)
+        .ok_or_else(|| AppError::NotFound(format!("Custom voice profile not found: {profile_id}")))
+}
+
+#[tauri::command]
+pub fn list_custom_voice_profiles() -> AppResult<Vec<CustomVoiceProfile>> {
+    load_custom_voice_profiles()
+}
+
+#[tauri::command]
+pub fn save_custom_voice_profile(
+    request: SaveCustomVoiceProfileRequest,
+) -> AppResult<CustomVoiceProfile> {
+    let mut profiles = load_custom_voice_profiles()?;
+    let normalized_model_path = dunce::canonicalize(PathBuf::from(request.model_path.trim()))
+        .map_err(|e| AppError::InvalidPath(format!("Invalid model path: {e}")))?;
+    let profile = CustomVoiceProfile {
+        id: request
+            .id
+            .unwrap_or_else(|| format!("cvoice-{}", uuid::Uuid::new_v4())),
+        name: request.name.trim().to_string(),
+        backend_kind: request.backend_kind.trim().to_ascii_lowercase(),
+        enabled: request.enabled.unwrap_or(true),
+        model_path: normalized_model_path.to_string_lossy().to_string(),
+        language: request.language.map(|v| v.trim().to_string()),
+    };
+
+    if profile.name.is_empty() {
+        return Err(AppError::InvalidState("Profile name cannot be empty".to_string()));
+    }
+    if profile.model_path.is_empty() {
+        return Err(AppError::InvalidState("Model path cannot be empty".to_string()));
+    }
+    let validation = validate_profile(&profile);
+    if !validation.ok {
+        return Err(AppError::InvalidState(validation.reason));
+    }
+
+    if let Some(existing) = profiles.iter_mut().find(|p| p.id == profile.id) {
+        *existing = profile.clone();
+    } else {
+        profiles.push(profile.clone());
+    }
+    save_custom_voice_profiles(&profiles)?;
+    Ok(profile)
+}
+
+#[tauri::command]
+pub fn delete_custom_voice_profile(profile_id: String) -> AppResult<()> {
+    let mut profiles = load_custom_voice_profiles()?;
+    let before = profiles.len();
+    profiles.retain(|p| p.id != profile_id);
+    if profiles.len() == before {
+        return Err(AppError::NotFound("Custom voice profile not found".to_string()));
+    }
+    save_custom_voice_profiles(&profiles)?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn validate_custom_voice_profile(profile_id: String) -> AppResult<CustomVoiceProfileValidation> {
+    let profile = resolve_custom_voice_profile(&profile_id)?;
+    Ok(validate_profile(&profile))
 }
 
 #[tauri::command]
@@ -157,7 +325,66 @@ pub fn speak_text(request: TtsRequest) -> AppResult<TtsResult> {
         .unwrap_or_else(|| "sherpa-melo".to_string());
 
     let rt = runtime()?;
-    let audio = if let Some(custom) = request.custom_voice {
+    let audio = if let Some(profile_id) = request.custom_voice_profile_id.as_deref() {
+        let profile = resolve_custom_voice_profile(profile_id)?;
+        if !profile.enabled {
+            return Err(AppError::InvalidState(format!(
+                "Custom voice profile is disabled: {}",
+                profile.name
+            )));
+        }
+        let validation = validate_profile(&profile);
+        if !validation.ok {
+            return Err(AppError::InvalidState(validation.reason));
+        }
+
+        let custom_audio = match profile.backend_kind.as_str() {
+            "piper" => {
+                let model_path = PathBuf::from(&profile.model_path);
+                let text = request.text.clone();
+                rt
+                .block_on(async {
+                    tokio::task::spawn_blocking(move || {
+                        tts::piper_tts::PiperTtsEngine::synthesize_with_path(
+                            &model_path,
+                            &text,
+                            rate,
+                        )
+                    })
+                    .await
+                    .map_err(|e| anyhow::anyhow!(e.to_string()))?
+                })
+                .map_err(to_app_error)
+            }
+            other => Err(AppError::InvalidState(format!(
+                "Unsupported custom voice backend: {other}"
+            ))),
+        };
+
+        match custom_audio {
+            Ok(audio) => audio,
+            Err(err) => {
+                let fallback_voice = fallback_voice_for_profile(&profile, &voice);
+                tracing::warn!(
+                    profile_id = %profile.id,
+                    profile_name = %profile.name,
+                    error = %err,
+                    fallback_voice = %fallback_voice,
+                    "custom voice synthesis failed; falling back to standard backend"
+                );
+                rt.block_on(async {
+                    synthesize_with_backend_fallback(
+                        "system",
+                        &request.text,
+                        &fallback_voice,
+                        rate,
+                        pitch,
+                    )
+                    .await
+                })?
+            }
+        }
+    } else if let Some(custom) = request.custom_voice {
         let model_type = match custom.model_type.as_str() {
             "gpt-sovits" => tts::CustomVoiceType::GptSoVits,
             "rvc" => tts::CustomVoiceType::Rvc,

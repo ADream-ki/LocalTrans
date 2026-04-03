@@ -37,6 +37,7 @@ pub enum IpcCommand {
         source_lang: String,
         target_lang: String,
         bidirectional: bool,
+        latency_profile: Option<String>,
     },
     SessionPause,
     SessionResume,
@@ -208,6 +209,7 @@ fn execute(command: IpcCommand, app: AppHandle) -> AppResult<Value> {
             source_lang,
             target_lang,
             bidirectional,
+            latency_profile,
         } => {
             commands::session::start_session(
                 app,
@@ -223,6 +225,7 @@ fn execute(command: IpcCommand, app: AppHandle) -> AppResult<Value> {
                     vad_threshold: None,
                     stream_translation_interval_ms: None,
                     stream_translation_min_chars: None,
+                    latency_profile,
                     tts_enabled: None,
                     tts_auto_play: None,
                     tts_engine: None,
@@ -230,6 +233,7 @@ fn execute(command: IpcCommand, app: AppHandle) -> AppResult<Value> {
                     tts_rate: None,
                     tts_volume: None,
                     tts_output_device: None,
+                    custom_voice_profile_id: None,
                     stream_tts_interval_ms: None,
                     stream_tts_min_chars: None,
                 },

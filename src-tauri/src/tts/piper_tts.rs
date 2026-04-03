@@ -128,6 +128,31 @@ impl PiperTtsEngine {
         }
     }
 
+    #[cfg(feature = "sherpa-backend")]
+    fn build_vits_config_for_path(model_path: &Path) -> sherpa_rs::tts::VitsTtsConfig {
+        let model_root = model_path
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_default();
+        let model = PiperModelInfo {
+            id: model_path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("custom-piper")
+                .to_string(),
+            name: model_path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("custom-piper")
+                .to_string(),
+            language: "unknown".to_string(),
+            quality: "custom".to_string(),
+            model_path: model_path.to_path_buf(),
+            json_path: model_path.with_extension("onnx.json"),
+        };
+        Self::build_vits_config(&model, &model_root)
+    }
+
     /// Scan for Piper models in the models directory
     pub fn scan_models(&mut self) -> Result<()> {
         let root = Self::models_root()?;
@@ -215,6 +240,46 @@ impl PiperTtsEngine {
             let config = Self::build_vits_config(model, &root);
             let mut tts = VitsTts::new(config);
 
+            let audio = tts
+                .create(text, 0, speed.clamp(0.5, 2.0))
+                .map_err(|e| anyhow!("Piper synthesis failed: {}", e))?;
+
+            let duration_secs = if audio.sample_rate == 0 {
+                0.0
+            } else {
+                audio.samples.len() as f32 / audio.sample_rate as f32
+            };
+
+            Ok(TtsAudio {
+                samples: audio.samples,
+                sample_rate: audio.sample_rate,
+                channels: 1,
+                duration_secs,
+            })
+        }
+    }
+
+    /// Synthesize text directly with a user-provided Piper ONNX model path.
+    pub fn synthesize_with_path(model_path: &Path, text: &str, speed: f32) -> Result<TtsAudio> {
+        #[cfg(not(feature = "sherpa-backend"))]
+        {
+            let _ = (model_path, text, speed);
+            bail!("Piper TTS requires sherpa-backend feature to be enabled");
+        }
+
+        #[cfg(feature = "sherpa-backend")]
+        {
+            use sherpa_rs::tts::VitsTts;
+
+            if !model_path.exists() {
+                bail!("Piper model not found: {}", model_path.display());
+            }
+            if model_path.extension().and_then(|e| e.to_str()) != Some("onnx") {
+                bail!("Piper model must be an .onnx file: {}", model_path.display());
+            }
+
+            let config = Self::build_vits_config_for_path(model_path);
+            let mut tts = VitsTts::new(config);
             let audio = tts
                 .create(text, 0, speed.clamp(0.5, 2.0))
                 .map_err(|e| anyhow!("Piper synthesis failed: {}", e))?;

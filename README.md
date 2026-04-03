@@ -37,6 +37,41 @@ Example:
 $env:LIBCLANG_PATH="C:\Program Files\LLVM\bin"
 ```
 
+The repo also includes a portable LLVM copy you can use for host builds:
+
+```powershell
+$env:LIBCLANG_PATH="$PWD\tools\llvm-portable\clang+llvm-22.1.1-x86_64-pc-windows-msvc\bin"
+```
+
+## Docker Build
+
+This repo uses a two-layer production build flow:
+
+1. Docker for reproducible frontend build and Rust validation
+2. Windows host packaging for the final Tauri release
+
+Why:
+- the product target is a Windows desktop app
+- when Docker runs with a `desktop-linux` daemon, it cannot emit a full Windows Tauri bundle directly
+- Docker still helps lock down the frontend and validation environments
+
+Run the Docker preparation step:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\tools\docker-build.ps1
+```
+
+Run the full release flow:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\tools\build-release.ps1
+```
+
+What the scripts do:
+- `docker-build.ps1` runs `npm ci && npm run build` inside Docker
+- `docker-build.ps1` runs `cargo check -q --no-default-features` inside Docker
+- `build-release.ps1` sets `LIBCLANG_PATH` to the bundled LLVM and then runs `npm run tauri build` on the host
+
 ## Bundled MT Runtime (No user Python required)
 
 `translate-text` and realtime MT can run with bundled runtime in release package:
@@ -106,7 +141,7 @@ src-tauri/target/release/localtrans.exe
 | `download-model` | Download model payload | `localtrans.exe download-model --model-type asr --model-id asr:sherpa-multi-zipformer` |
 | `list-models` | List installed models by type | `localtrans.exe list-models --model-type asr` |
 | `delete-model` | Delete model by id | `localtrans.exe delete-model --model-id asr:sherpa-multi-zipformer` |
-| `session-start` | Start realtime session | `localtrans.exe session-start --source-lang zh --target-lang en` |
+| `session-start` | Start realtime session | `localtrans.exe session-start --source-lang zh --target-lang en --latency-profile low-latency` |
 | `session-pause` | Pause realtime session | `localtrans.exe session-pause` |
 | `session-resume` | Resume realtime session | `localtrans.exe session-resume` |
 | `session-stop` | Stop realtime session | `localtrans.exe session-stop` |
@@ -126,6 +161,8 @@ src-tauri/target/release/localtrans.exe
 | `config-set` | Set config value | `localtrans.exe config-set --key translationEngine --value nllb` |
 | `config-get` | Get config value | `localtrans.exe config-get --key translationEngine` |
 | `call` | Generic command bridge | `localtrans.exe call --name check_mt_runtime --args-json "{}"` |
+
+`session-start --latency-profile` supports `low-latency`, `balanced`, `high-accuracy`.
 
 ## Test Checklist (Portable Release)
 
@@ -148,3 +185,4 @@ Current CI builds Tauri release artifacts. If you require bundled MT runtime in 
 
 - Success: JSON to `stdout`
 - Failure: JSON to `stderr`, exit code `1`
+

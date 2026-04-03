@@ -6,7 +6,9 @@ use serde::{Deserialize, Serialize};
 use tauri::AppHandle;
 
 use crate::error::{AppError, AppResult};
-use crate::pipeline::{HistoryItem, PipelineConfig, PipelineState, PipelineStats, RealtimePipeline};
+use crate::pipeline::{
+    HistoryItem, LatencyProfile, PipelineConfig, PipelineState, PipelineStats, RealtimePipeline,
+};
 use crate::session_bus;
 
 #[derive(Debug, Deserialize)]
@@ -23,6 +25,7 @@ pub struct SessionConfig {
     pub vad_threshold: Option<f32>,
     pub stream_translation_interval_ms: Option<u32>,
     pub stream_translation_min_chars: Option<u32>,
+    pub latency_profile: Option<String>,
     pub tts_enabled: Option<bool>,
     pub tts_auto_play: Option<bool>,
     pub tts_engine: Option<String>,
@@ -30,6 +33,7 @@ pub struct SessionConfig {
     pub tts_rate: Option<f32>,
     pub tts_volume: Option<f32>,
     pub tts_output_device: Option<String>,
+    pub custom_voice_profile_id: Option<String>,
     pub stream_tts_interval_ms: Option<u32>,
     pub stream_tts_min_chars: Option<u32>,
 }
@@ -155,6 +159,7 @@ fn ensure_not_running() -> AppResult<()> {
 }
 
 fn cfg_to_pipeline(config: SessionConfig) -> PipelineConfig {
+    let latency_profile = config.latency_profile.clone();
     let mut pipeline = PipelineConfig {
         source_lang: config.source_lang,
         target_lang: config.target_lang,
@@ -165,6 +170,9 @@ fn cfg_to_pipeline(config: SessionConfig) -> PipelineConfig {
         loci_enhanced: config.loci_enhanced,
         ..Default::default()
     };
+    if let Some(profile) = latency_profile.as_deref().and_then(LatencyProfile::parse) {
+        pipeline.apply_latency_profile(profile);
+    }
     if let Some(v) = config.vad_frame_ms {
         pipeline.vad_frame_ms = v;
     }
@@ -197,6 +205,9 @@ fn cfg_to_pipeline(config: SessionConfig) -> PipelineConfig {
     }
     if let Some(v) = config.tts_output_device {
         pipeline.tts_output_device = if v.trim().is_empty() { None } else { Some(v) };
+    }
+    if let Some(v) = config.custom_voice_profile_id {
+        pipeline.custom_voice_profile_id = if v.trim().is_empty() { None } else { Some(v) };
     }
     if let Some(v) = config.stream_tts_interval_ms {
         pipeline.stream_tts_interval_ms = u64::from(v).clamp(500, 10000);
@@ -389,6 +400,7 @@ pub fn start_session_cli(
     source_lang: String,
     target_lang: String,
     bidirectional: bool,
+    _latency_profile: Option<String>,
 ) -> AppResult<SessionStatus> {
     write_runtime_state("running", source_lang, target_lang, bidirectional);
     Ok(SessionStatus {

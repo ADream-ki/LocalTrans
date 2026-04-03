@@ -1,0 +1,3 @@
+[submodule "loci-refactor"]
+	path = submodules/loci-refactor
+	url = git@work:decade-afk/Loci.git

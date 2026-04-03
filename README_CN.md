@@ -37,6 +37,41 @@ LocalTrans 以本地优先的实时闭环为核心：
 $env:LIBCLANG_PATH="C:\Program Files\LLVM\bin"
 ```
 
+仓库也自带一份便携 LLVM，可直接用于本机构建：
+
+```powershell
+$env:LIBCLANG_PATH="$PWD\tools\llvm-portable\clang+llvm-22.1.1-x86_64-pc-windows-msvc\bin"
+```
+
+## Docker 构建
+
+当前仓库的生产构建分两层：
+
+1. Docker 负责可复现的前端构建与 Rust 语法/feature 校验
+2. Windows 主机负责最终 Tauri release 打包
+
+原因：
+- 当前桌面程序目标是 Windows
+- 你的 Docker daemon 若是 `desktop-linux`，无法直接产出完整 Windows Tauri bundle
+- 但仍然可以用 Docker 固定前端与校验环境，减少“我本机能跑”的漂移
+
+执行 Docker 预构建：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\tools\docker-build.ps1
+```
+
+执行完整 release：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\tools\build-release.ps1
+```
+
+其中：
+- `docker-build.ps1` 会在容器内运行 `npm ci && npm run build`
+- `docker-build.ps1` 也会在容器内运行 `cargo check -q --no-default-features`
+- `build-release.ps1` 会自动设置仓库内置的 `LIBCLANG_PATH`，然后在主机执行 `npm run tauri build`
+
 ## 内置 MT 运行时（用户机器无需 Python）
 
 Release 包中的 `translate-text` 与实时机翻可直接使用内置运行时：
@@ -106,7 +141,7 @@ src-tauri/target/release/localtrans.exe
 | `download-model` | 下载模型资源 | `localtrans.exe download-model --model-type asr --model-id asr:sherpa-multi-zipformer` |
 | `list-models` | 按类型列出模型 | `localtrans.exe list-models --model-type asr` |
 | `delete-model` | 按 id 删除模型 | `localtrans.exe delete-model --model-id asr:sherpa-multi-zipformer` |
-| `session-start` | 启动实时会话 | `localtrans.exe session-start --source-lang zh --target-lang en` |
+| `session-start` | 启动实时会话 | `localtrans.exe session-start --source-lang zh --target-lang en --latency-profile low-latency` |
 | `session-pause` | 暂停实时会话 | `localtrans.exe session-pause` |
 | `session-resume` | 恢复实时会话 | `localtrans.exe session-resume` |
 | `session-stop` | 停止实时会话 | `localtrans.exe session-stop` |
@@ -126,6 +161,8 @@ src-tauri/target/release/localtrans.exe
 | `config-set` | 设置配置项 | `localtrans.exe config-set --key translationEngine --value nllb` |
 | `config-get` | 读取配置项 | `localtrans.exe config-get --key translationEngine` |
 | `call` | 通用命令桥 | `localtrans.exe call --name check_mt_runtime --args-json "{}"` |
+
+`session-start --latency-profile` 支持：`low-latency`、`balanced`、`high-accuracy`。
 
 ## 便携版测试清单
 
@@ -148,3 +185,4 @@ src-tauri/target/release/localtrans.exe
 
 - 成功：JSON 输出到 `stdout`
 - 失败：JSON 输出到 `stderr`，退出码 `1`
+

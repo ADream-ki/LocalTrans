@@ -105,6 +105,7 @@ interface TtsRequest {
   volume?: number;
   outputDevice?: string | null;
   customVoice?: CustomVoiceRequest;
+  customVoiceProfileId?: string | null;
 }
 
 interface TtsResult {
@@ -329,6 +330,12 @@ function SessionPage() {
     };
 
     if (
+      settings.ttsEngine === "custom" &&
+      settings.customVoiceEnabled &&
+      settings.customVoiceProfileId
+    ) {
+      request.customVoiceProfileId = settings.customVoiceProfileId;
+    } else if (
       settings.ttsEngine === "custom" &&
       settings.customVoiceEnabled &&
       settings.customVoiceModelPath

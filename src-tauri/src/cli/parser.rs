@@ -49,6 +49,8 @@ pub enum Commands {
         target_lang: String,
         #[arg(long, default_value_t = false)]
         bidirectional: bool,
+        #[arg(long, default_value = "balanced")]
+        latency_profile: String,
     },
     SessionPause,
     SessionResume,

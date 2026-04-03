@@ -7,4 +7,4 @@ pub use events::{
     PipelineState,
     HistoryItem,
 };
-pub use realtime::{RealtimePipeline, PipelineConfig, PipelineStats};
+pub use realtime::{LatencyProfile, PipelineConfig, PipelineStats, RealtimePipeline};
