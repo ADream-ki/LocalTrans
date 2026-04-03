@@ -129,6 +129,7 @@ Current behavior:
 - session UI now exposes a lightweight Loci governance summary so workflow/plugin state is visible during live operation instead of only on the diagnostics page
 - settings UI now exposes `lociPluginDirs` and `lociWorkflowPlugin`, so manifest-first workflow governance can be configured without editing `.localtrans-config.json` by hand
 - session UI now exposes a startup preflight so users see blockers and corrective actions before they hit runtime errors
+- app shell now exposes a global first-run onboarding modal instead of a model-page-only popup, so model readiness, workflow governance, device routing, and privacy posture are explained before the user starts a session
 
 Current workflow declaration conventions recognized by `LocalTrans`:
 

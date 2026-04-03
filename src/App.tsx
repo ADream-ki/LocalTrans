@@ -4,8 +4,10 @@ import SessionPage from "./pages/SessionPage";
 import SettingsPage from "./pages/SettingsPage";
 import ModelPage from "./pages/ModelPage";
 import DiagnosticsPage from "./pages/DiagnosticsPage";
+import OnboardingModal from "./components/OnboardingModal";
 import TitleBar from "./components/TitleBar";
-import { Mic, Settings, Package, Activity } from "lucide-react";
+import { Mic, Settings, Package, Activity, Sparkles } from "lucide-react";
+import { useRef } from "react";
 
 const tabs = [
   { id: "session" as Tab, label: "会话", icon: Mic },
@@ -22,10 +24,11 @@ function App() {
     modelOnboardingOpen,
     openModelOnboarding,
   } = useUiStore();
+  const bootstrappedOnboarding = useRef(false);
 
   useEffect(() => {
-    if (!modelOnboardingSeen && !modelOnboardingOpen) {
-      setActiveTab("model");
+    if (!bootstrappedOnboarding.current && !modelOnboardingSeen && !modelOnboardingOpen) {
+      bootstrappedOnboarding.current = true;
       openModelOnboarding();
     }
   }, [modelOnboardingSeen, modelOnboardingOpen, openModelOnboarding, setActiveTab]);
@@ -61,6 +64,15 @@ function App() {
               </button>
             );
           })}
+          {!modelOnboardingSeen && (
+            <button
+              onClick={() => openModelOnboarding()}
+              className="ml-auto flex items-center gap-s px-l py-s rounded-medium font-medium text-primary hover:bg-primary/10 transition-colors duration-fast"
+            >
+              <Sparkles size={16} />
+              <span>首次向导</span>
+            </button>
+          )}
         </div>
 
         {/* Page Content */}
@@ -71,6 +83,7 @@ function App() {
           {activeTab === "diagnostics" && <DiagnosticsPage />}
         </div>
       </div>
+      <OnboardingModal />
     </div>
   );
 }
