@@ -207,6 +207,30 @@ impl TtsAdapter for CommandTtsAdapter {
     }
 }
 
+pub struct NoopTtsAdapter;
+
+impl NoopTtsAdapter {
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl Default for NoopTtsAdapter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl TtsAdapter for NoopTtsAdapter {
+    fn adapter_name(&self) -> &'static str {
+        "noop-tts"
+    }
+
+    fn speak(&self, _request: TtsPlaybackRequest) -> Result<()> {
+        Ok(())
+    }
+}
+
 pub struct QwenTtsAdapter;
 
 impl QwenTtsAdapter {
@@ -250,6 +274,10 @@ pub fn create_tts_adapter(engine: &str) -> Result<Box<dyn TtsAdapter>> {
         "qwen3-tts" => Ok(Box::new(QwenTtsAdapter::new()?)),
         other => Err(anyhow!("Unsupported TTS engine: {other}")),
     }
+}
+
+pub fn create_disabled_tts_adapter() -> Box<dyn TtsAdapter> {
+    Box::new(NoopTtsAdapter::new())
 }
 
 pub fn runtime_adapter_inventory(

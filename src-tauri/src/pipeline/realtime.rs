@@ -25,8 +25,9 @@ use crate::asr::{AsrConfig, StreamingConfig, StreamingResult};
 use crate::audio::resample_linear;
 use crate::audio::AudioCapture;
 use crate::runtime_adapters::{
-    create_realtime_asr_adapter, create_tts_adapter, DeterministicMtAdapter, LociMtAdapter,
-    MtAdapter, RealtimeAsrAdapter, TtsAdapter, TtsPlaybackRequest,
+    create_disabled_tts_adapter, create_realtime_asr_adapter, create_tts_adapter,
+    DeterministicMtAdapter, LociMtAdapter, MtAdapter, RealtimeAsrAdapter, TtsAdapter,
+    TtsPlaybackRequest,
 };
 use crate::session_bus;
 
@@ -313,14 +314,17 @@ impl RealtimePipeline {
                 return Err(anyhow!("Unsupported translation engine: {}", other));
             }
         };
-        let tts_adapter: Arc<Box<dyn TtsAdapter>> =
+        let tts_adapter: Arc<Box<dyn TtsAdapter>> = if config.tts_enabled {
             Arc::new(create_tts_adapter(&config.tts_engine).map_err(|e| {
                 anyhow!(
                     "failed to initialize TTS adapter for engine {}: {}",
                     config.tts_engine,
                     e
                 )
-            })?);
+            })?)
+        } else {
+            Arc::new(create_disabled_tts_adapter())
+        };
 
         let pipeline_id = Uuid::new_v4().to_string();
         tracing::info!(

@@ -20,6 +20,7 @@ pub struct RuntimeStatus {
     pub models_dir: String,
     pub asr: RuntimeComponentStatus,
     pub translation: RuntimeComponentStatus,
+    pub tts: RuntimeComponentStatus,
     pub vad: RuntimeComponentStatus,
     pub tts_engine: String,
     pub loci_unhealthy: bool,
@@ -63,11 +64,17 @@ pub fn get_runtime_status() -> AppResult<RuntimeStatus> {
     let models_dir = super::model::models_dir()?;
     let asr_ready = super::model::has_ready_model("asr")?;
     let loci_ready = super::model::has_ready_model("loci")?;
-    let tts_ready = super::model::has_ready_model("tts")?;
+    let bundled_tts_ready = super::model::has_ready_model("tts")?;
     let asr_engine = super::session::resolved_asr_engine(None);
     let translation_engine = super::translation::resolved_translation_engine(None);
     let tts_engine = super::session::resolved_tts_engine(None);
     let mt_ready = check_mt_runtime()?.ready;
+    let custom_voice_enabled = crate::commands::config::get_value("customVoiceEnabled")
+        .and_then(|value| value.as_bool())
+        .unwrap_or(false);
+    let custom_voice_profile_id = crate::commands::config::get_string("customVoiceProfileId");
+    let custom_voice_model_path = crate::commands::config::get_string("customVoiceModelPath");
+
     let (translation_ready, translation_path, translation_message, translation_action) =
         if translation_engine == "loci" {
             (
@@ -106,6 +113,67 @@ pub fn get_runtime_status() -> AppResult<RuntimeStatus> {
             )
         };
 
+    let (tts_ready, tts_path, tts_message, tts_action) = match tts_engine.as_str() {
+        "edge-tts" => (
+            true,
+            "remote://edge-tts".to_string(),
+            "Edge TTS is available as an online backend".to_string(),
+            None,
+        ),
+        "system" => (
+            true,
+            "host://system-tts".to_string(),
+            "System TTS route is available on the host".to_string(),
+            None,
+        ),
+        "custom" => {
+            let ready = custom_voice_enabled
+                && (custom_voice_profile_id.is_some() || custom_voice_model_path.is_some());
+            (
+                ready,
+                custom_voice_model_path
+                    .or(custom_voice_profile_id.map(|id| format!("profile://{id}")))
+                    .unwrap_or_else(|| models_dir.join("tts").display().to_string()),
+                if ready {
+                    "Custom voice route is configured".to_string()
+                } else {
+                    "Custom voice engine selected, but no profile/model is configured".to_string()
+                },
+                if ready {
+                    None
+                } else {
+                    Some("open_settings_page".to_string())
+                },
+            )
+        }
+        "qwen3-tts" => (
+            false,
+            models_dir.join("tts").display().to_string(),
+            "Qwen3-TTS adapter slot exists but this build does not yet include a concrete backend".to_string(),
+            Some("build_or_plugin_required".to_string()),
+        ),
+        "sherpa-melo" | "piper" => (
+            bundled_tts_ready,
+            models_dir.join("tts").display().to_string(),
+            if bundled_tts_ready {
+                "Bundled local TTS assets are ready".to_string()
+            } else {
+                "Bundled local TTS assets are not installed".to_string()
+            },
+            if bundled_tts_ready {
+                None
+            } else {
+                Some("download_tts_model".to_string())
+            },
+        ),
+        other => (
+            false,
+            models_dir.join("tts").display().to_string(),
+            format!("Unknown TTS engine: {other}"),
+            None,
+        ),
+    };
+
     Ok(RuntimeStatus {
         models_dir: models_dir.display().to_string(),
         asr: RuntimeComponentStatus {
@@ -126,14 +194,17 @@ pub fn get_runtime_status() -> AppResult<RuntimeStatus> {
             action: translation_action,
             engine: Some(translation_engine),
         },
-        vad: RuntimeComponentStatus {
+        tts: RuntimeComponentStatus {
             ready: tts_ready,
+            path: tts_path,
+            message: tts_message,
+            action: tts_action,
+            engine: Some(tts_engine.clone()),
+        },
+        vad: RuntimeComponentStatus {
+            ready: false,
             path: models_dir.join("vad").display().to_string(),
-            message: if tts_ready {
-                "Optional components available".to_string()
-            } else {
-                "Optional VAD model not installed".to_string()
-            },
+            message: "Optional VAD model not installed".to_string(),
             action: Some("download_optional_vad".to_string()),
             engine: None,
         },

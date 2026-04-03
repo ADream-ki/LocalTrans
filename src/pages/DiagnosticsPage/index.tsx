@@ -33,6 +33,7 @@ interface RuntimeStatus {
   modelsDir: string;
   asr: RuntimeComponentStatus;
   translation: RuntimeComponentStatus;
+  tts: RuntimeComponentStatus;
   vad: RuntimeComponentStatus;
   ttsEngine: string;
 }
@@ -186,6 +187,32 @@ function DiagnosticsPage() {
             },
             { key: "VAD 路径", value: runtime.vad.path || "-", status: runtime.vad.ready ? "ok" : "warning" },
             { key: "模型目录", value: runtime.modelsDir || "-", status: "ok" },
+          ],
+        },
+        {
+          title: "TTS 运行时",
+          icon: <Volume2 size={18} className="text-primary" />,
+          items: [
+            {
+              key: "TTS 引擎",
+              value: runtime.tts.engine || runtime.ttsEngine || "-",
+              status: runtime.tts.ready ? "ok" : "warning",
+            },
+            {
+              key: "TTS 状态",
+              value: runtime.tts.ready ? "已就绪" : "未就绪",
+              status: runtime.tts.ready ? "ok" : "warning",
+            },
+            {
+              key: "TTS 路径",
+              value: runtime.tts.path || "-",
+              status: runtime.tts.ready ? "ok" : "warning",
+            },
+            {
+              key: "TTS 说明",
+              value: runtime.tts.message || "-",
+              status: runtime.tts.ready ? "ok" : "warning",
+            },
           ],
         },
         {

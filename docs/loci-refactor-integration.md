@@ -103,6 +103,8 @@ Current behavior:
 - translation uses explicit MT adapters (`LociMtAdapter`, `DeterministicMtAdapter`)
 - ASR is instantiated through a runtime adapter factory instead of direct pipeline wiring
 - TTS is instantiated through a runtime adapter factory instead of a hardcoded command bridge
+- backend runtime diagnostics now expose adapter inventory plus selected ASR/MT/TTS routes
+- when backend TTS is disabled, the realtime pipeline now uses a no-op TTS adapter instead of failing on an unavailable concrete TTS backend
 
 Scaffolded engine slots:
 

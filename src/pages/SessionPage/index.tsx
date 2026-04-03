@@ -65,9 +65,11 @@ interface RuntimeStatus {
   modelsDir: string;
   asr: RuntimeComponentStatus;
   translation: RuntimeComponentStatus;
+  tts: RuntimeComponentStatus;
   vad: RuntimeComponentStatus;
   lociUnhealthy?: boolean;
   lociUnhealthyRemainingSec?: number;
+  ttsEngine?: string;
 }
 
 interface PipelineStatsPayload {

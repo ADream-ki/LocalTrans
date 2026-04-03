@@ -341,6 +341,13 @@ pub fn start_session(app: AppHandle, config: SessionConfig) -> AppResult<()> {
             "qwen3-asr adapter slot is scaffolded, but this build does not yet include a concrete qwen3-asr backend. Please switch ASR engine or wire qwen3_asr_rs/Loci plugin first.".to_string(),
         ));
     }
+    let tts_enabled = config.tts_enabled.unwrap_or(true);
+    let tts_engine = resolved_tts_engine(config.tts_engine.as_deref());
+    if tts_enabled && tts_engine == "qwen3-tts" {
+        return Err(AppError::InvalidState(
+            "qwen3-tts adapter slot is scaffolded, but this build does not yet include a concrete qwen3-tts backend. Disable backend auto-play or switch TTS engine until qwen3-tts-rs/plugin wiring lands.".to_string(),
+        ));
+    }
 
     ensure_supported_asr_build()?;
 
