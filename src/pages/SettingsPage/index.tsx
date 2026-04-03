@@ -83,6 +83,25 @@ interface SaveCustomVoiceProfileRequest {
   language?: string | null;
 }
 
+interface LociWorkflowPolicySnapshot {
+  translationEngine: string;
+  governanceEnabled: boolean;
+  runtimeReady: boolean;
+  policyActive: boolean;
+  activeWorkflowRewriter?: string | null;
+  workflows: string[];
+  effectiveAsrEngine?: string | null;
+  effectiveTtsEngine?: string | null;
+  effectiveTtsEnabled?: boolean | null;
+  preferredLatencyProfile?: string | null;
+  forceBidirectional?: boolean | null;
+  forceTtsAutoPlay?: boolean | null;
+  supportsStreaming: boolean;
+  supportsVoiceCloning: boolean;
+  unresolvedWorkflows: string[];
+  statusMessage: string;
+}
+
 function SettingsPage() {
   const {
     sampleRate,
@@ -91,6 +110,8 @@ function SettingsPage() {
     asrLanguage,
     translationEngine,
     lociModelPath,
+    lociPluginDirs,
+    lociWorkflowPlugin,
     vadEnabled,
     chunkSize,
     gpuAcceleration,
@@ -113,6 +134,8 @@ function SettingsPage() {
     setAsrLanguage,
     setTranslationEngine,
     setLociModelPath,
+    setLociPluginDirs,
+    setLociWorkflowPlugin,
     setVadEnabled,
     setChunkSize,
     setGpuAcceleration,
@@ -136,6 +159,8 @@ function SettingsPage() {
   const [customProfilePathDraft, setCustomProfilePathDraft] = useState("");
   const [customProfileError, setCustomProfileError] = useState<string | null>(null);
   const [customProfileSaving, setCustomProfileSaving] = useState(false);
+  const [lociWorkflowPolicy, setLociWorkflowPolicy] = useState<LociWorkflowPolicySnapshot | null>(null);
+  const [lociWorkflowError, setLociWorkflowError] = useState<string | null>(null);
 
   useEffect(() => {
     // Check virtual audio driver
@@ -186,6 +211,19 @@ function SettingsPage() {
           setTranslationEngine(cfg.translationEngine as typeof translationEngine);
         }
         if (typeof cfg.lociModelPath === "string") setLociModelPath(cfg.lociModelPath);
+        if (Array.isArray(cfg.lociPluginDirs)) {
+          setLociPluginDirs(
+            cfg.lociPluginDirs
+              .map((value) => (typeof value === "string" ? value.trim() : ""))
+              .filter(Boolean)
+              .join("\n")
+          );
+        } else if (typeof cfg.lociPluginDirs === "string") {
+          setLociPluginDirs(cfg.lociPluginDirs);
+        }
+        if (typeof cfg.lociWorkflowPlugin === "string") {
+          setLociWorkflowPlugin(cfg.lociWorkflowPlugin);
+        }
         if (typeof cfg.vadEnabled === "boolean") setVadEnabled(cfg.vadEnabled);
         if (typeof cfg.chunkSize === "number") setChunkSize(cfg.chunkSize);
         if (typeof cfg.gpuAcceleration === "boolean") setGpuAcceleration(cfg.gpuAcceleration);
@@ -221,6 +259,11 @@ function SettingsPage() {
       asrLanguage,
       translationEngine,
       lociModelPath,
+      lociPluginDirs: lociPluginDirs
+        .split(/\r?\n|;/)
+        .map((value) => value.trim())
+        .filter(Boolean),
+      lociWorkflowPlugin,
       vadEnabled,
       chunkSize,
       gpuAcceleration,
@@ -247,6 +290,8 @@ function SettingsPage() {
     asrLanguage,
     translationEngine,
     lociModelPath,
+    lociPluginDirs,
+    lociWorkflowPlugin,
     vadEnabled,
     chunkSize,
     gpuAcceleration,
@@ -264,6 +309,24 @@ function SettingsPage() {
     customVoiceReferenceAudio,
     customVoiceReferenceText,
   ]);
+
+  useEffect(() => {
+    if (!configSyncReady) return;
+
+    const id = window.setTimeout(() => {
+      invoke<LociWorkflowPolicySnapshot>("get_loci_workflow_policy")
+        .then((policy) => {
+          setLociWorkflowPolicy(policy);
+          setLociWorkflowError(null);
+        })
+        .catch((err) => {
+          setLociWorkflowPolicy(null);
+          setLociWorkflowError(err instanceof Error ? err.message : String(err));
+        });
+    }, 120);
+
+    return () => window.clearTimeout(id);
+  }, [configSyncReady, translationEngine, lociModelPath, lociPluginDirs, lociWorkflowPlugin]);
 
   const handlePreset = (preset: typeof presets[0]) => {
     setAsrModelSize(preset.settings.asrModelSize);
@@ -883,6 +946,77 @@ function SettingsPage() {
               <p className="text-xs text-text-tertiary mt-xs">
                 指定后，单次翻译和实时会话都会优先使用这个 GGUF 模型。
               </p>
+            </div>
+
+            <div>
+              <label className="text-xs text-text-secondary block mb-xs">Loci 插件目录</label>
+              <textarea
+                value={lociPluginDirs}
+                onChange={(e) => setLociPluginDirs(e.target.value)}
+                className="input-field min-h-[96px]"
+                placeholder={"每行一个目录，例如：\nD:\\plugins\\loci\nD:\\Code\\team-plugins"}
+              />
+              <p className="text-xs text-text-tertiary mt-xs">
+                会写入 `lociPluginDirs`，用于启动时递归发现 manifest-first 插件包。
+              </p>
+            </div>
+
+            <div>
+              <label className="text-xs text-text-secondary block mb-xs">Workflow Rewriter 插件名</label>
+              <input
+                type="text"
+                value={lociWorkflowPlugin}
+                onChange={(e) => setLociWorkflowPlugin(e.target.value)}
+                className="input-field"
+                placeholder="例如：speech-workflow-qwen"
+              />
+              <p className="text-xs text-text-tertiary mt-xs">
+                会写入 `lociWorkflowPlugin`，用于指定由哪个插件接管语音工作流治理。
+              </p>
+            </div>
+
+            <div className="p-m bg-bg-secondary/50 rounded-large border border-bg-tertiary">
+              <div className="text-sm font-medium text-text-primary mb-xs">Workflow 治理状态</div>
+              {lociWorkflowError ? (
+                <div className="text-xs text-warning break-words">{lociWorkflowError}</div>
+              ) : (
+                <div className="space-y-xs text-xs">
+                  <div className="flex items-center justify-between gap-s">
+                    <span className="text-text-secondary">激活插件</span>
+                    <span className="font-mono text-text-primary">
+                      {lociWorkflowPolicy?.activeWorkflowRewriter || "-"}
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between gap-s">
+                    <span className="text-text-secondary">治理后 ASR</span>
+                    <span className="font-mono text-text-primary">
+                      {lociWorkflowPolicy?.effectiveAsrEngine || "-"}
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between gap-s">
+                    <span className="text-text-secondary">治理后 TTS</span>
+                    <span className="font-mono text-text-primary">
+                      {lociWorkflowPolicy?.effectiveTtsEnabled === false
+                        ? "disabled"
+                        : lociWorkflowPolicy?.effectiveTtsEngine || "-"}
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between gap-s">
+                    <span className="text-text-secondary">延迟策略</span>
+                    <span className="font-mono text-text-primary">
+                      {lociWorkflowPolicy?.preferredLatencyProfile || "-"}
+                    </span>
+                  </div>
+                  <div className="text-text-secondary break-words">
+                    {lociWorkflowPolicy?.statusMessage || "尚未解析到 workflow 治理策略"}
+                  </div>
+                  {lociWorkflowPolicy && lociWorkflowPolicy.workflows.length > 0 && (
+                    <div className="text-text-tertiary break-words">
+                      {lociWorkflowPolicy.workflows.join(", ")}
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
           </div>
         </GlassCard>

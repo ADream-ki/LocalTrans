@@ -30,6 +30,8 @@ export interface SettingsState {
   // Loci
   lociModelPath: string;
   lociEnabled: boolean;
+  lociPluginDirs: string;
+  lociWorkflowPlugin: string;
 
   // TTS
   ttsEnabled: boolean;
@@ -83,6 +85,8 @@ export interface SettingsState {
 
   setLociModelPath: (path: string) => void;
   setLociEnabled: (enabled: boolean) => void;
+  setLociPluginDirs: (value: string) => void;
+  setLociWorkflowPlugin: (value: string) => void;
 
   setTtsEnabled: (enabled: boolean) => void;
   setTtsEngine: (engine: SettingsState["ttsEngine"]) => void;
@@ -141,6 +145,8 @@ export const useSettingsStore = create<SettingsState>()(
       // Loci
       lociModelPath: "",
       lociEnabled: true,
+      lociPluginDirs: "",
+      lociWorkflowPlugin: "",
 
       // TTS
       ttsEnabled: true,
@@ -195,6 +201,8 @@ export const useSettingsStore = create<SettingsState>()(
 
       setLociModelPath: (path) => set({ lociModelPath: path }),
       setLociEnabled: (enabled) => set({ lociEnabled: enabled }),
+      setLociPluginDirs: (value) => set({ lociPluginDirs: value }),
+      setLociWorkflowPlugin: (value) => set({ lociWorkflowPlugin: value }),
 
       setTtsEnabled: (enabled) => set({ ttsEnabled: enabled }),
       setTtsEngine: (engine) => set({ ttsEngine: engine }),
@@ -223,7 +231,7 @@ export const useSettingsStore = create<SettingsState>()(
     }),
     {
       name: "localtrans-settings",
-      version: 5,
+      version: 6,
       migrate: (persistedState, version) => {
         const state = (persistedState ?? {}) as Partial<SettingsState>;
         if (version < 3) {
@@ -234,6 +242,10 @@ export const useSettingsStore = create<SettingsState>()(
           if (!state.translationEngine || state.translationEngine === "loci") {
             state.translationEngine = "nllb";
           }
+        }
+        if (version < 6) {
+          state.lociPluginDirs = state.lociPluginDirs ?? "";
+          state.lociWorkflowPlugin = state.lociWorkflowPlugin ?? "";
         }
         return state as SettingsState;
       },

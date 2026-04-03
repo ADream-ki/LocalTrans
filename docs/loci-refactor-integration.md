@@ -123,6 +123,7 @@ Current behavior:
 - when backend TTS is disabled, the realtime pipeline now uses a no-op TTS adapter instead of failing on an unavailable concrete TTS backend
 - diagnostics now expose a dedicated Loci governance snapshot: selected engine state, resolved model path, configured plugin dirs, configured core rewriters, and current active rewriter inventory
 - session UI now exposes a lightweight Loci governance summary so workflow/plugin state is visible during live operation instead of only on the diagnostics page
+- settings UI now exposes `lociPluginDirs` and `lociWorkflowPlugin`, so manifest-first workflow governance can be configured without editing `.localtrans-config.json` by hand
 
 Current workflow declaration conventions recognized by `LocalTrans`:
 
