@@ -46,11 +46,11 @@ export interface SessionState {
   audioDevices: AudioDevice[];
 
   // ASR settings
-  asrEngine: "whisper" | "sensevoice" | "vosk";
+  asrEngine: "whisper" | "sensevoice" | "vosk" | "qwen3-asr";
   asrModelSize: "tiny" | "base" | "small" | "medium" | "large";
 
   // Translation settings
-  translationEngine: "loci" | "nllb" | "m2m";
+  translationEngine: "loci" | "nllb" | "m2m" | "argos";
 
   // Actions
   startSession: () => Promise<void>;
@@ -85,6 +85,7 @@ export interface SessionState {
 type BackendSessionConfig = {
   sourceLang: string;
   targetLang: string;
+  asrEngine?: string | null;
   translationEngine?: string | null;
   inputDevice: string | null;
   peerInputDevice: string | null;
@@ -156,6 +157,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     const config: BackendSessionConfig = {
       sourceLang: state.sourceLang,
       targetLang: state.targetLang,
+      asrEngine: state.asrEngine,
       translationEngine: state.translationEngine,
       inputDevice: state.selectedInputDevice,
       peerInputDevice: state.selectedPeerInputDevice,

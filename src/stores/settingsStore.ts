@@ -16,7 +16,7 @@ export interface SettingsState {
   channels: number;
 
   // ASR
-  asrEngine: "whisper" | "sensevoice" | "vosk";
+  asrEngine: "whisper" | "sensevoice" | "vosk" | "qwen3-asr";
   asrModelPath: string;
   asrLanguage: string;
   asrModelSize: "tiny" | "base" | "small" | "medium" | "large";
@@ -33,7 +33,7 @@ export interface SettingsState {
 
   // TTS
   ttsEnabled: boolean;
-  ttsEngine: "sherpa-melo" | "edge-tts" | "custom" | "piper" | "system";
+  ttsEngine: "sherpa-melo" | "edge-tts" | "custom" | "piper" | "system" | "qwen3-tts";
   ttsVoice: string;
   ttsRate: number;
   ttsVolume: number;

@@ -13,8 +13,12 @@ pub trait RealtimeAsrAdapter: Send + Sync {
 
 pub trait MtAdapter: Send + Sync {
     fn adapter_name(&self) -> &'static str;
-    fn translate(&mut self, text: &str, source_lang: &str, target_lang: &str)
-        -> Result<TranslationResult>;
+    fn translate(
+        &mut self,
+        text: &str,
+        source_lang: &str,
+        target_lang: &str,
+    ) -> Result<TranslationResult>;
 }
 
 #[derive(Debug, Clone)]
@@ -61,14 +65,40 @@ impl RealtimeAsrAdapter for StreamingAsrAdapter {
     }
 }
 
+pub struct QwenAsrAdapter;
+
+impl QwenAsrAdapter {
+    pub fn new(_config: AsrConfig, _streaming: StreamingConfig) -> Result<Self> {
+        Err(anyhow!(
+            "qwen3-asr adapter slot is scaffolded but this build does not yet include qwen3-asr-rs; wire a concrete adapter or a Loci-governed plugin before selecting qwen3-asr"
+        ))
+    }
+}
+
+impl RealtimeAsrAdapter for QwenAsrAdapter {
+    fn adapter_name(&self) -> &'static str {
+        "qwen3-asr"
+    }
+
+    fn process(&mut self, _chunk: &[f32]) -> Result<Option<StreamingResult>> {
+        Err(anyhow!("qwen3-asr adapter is not available in this build"))
+    }
+
+    fn set_language(&mut self, _lang: &str) {}
+}
+
 pub struct LociMtAdapter {
     inner: LociTranslator,
 }
 
 impl LociMtAdapter {
     pub fn new(model_path: PathBuf) -> Result<Self> {
-        let inner = LociTranslator::init(&model_path)
-            .with_context(|| format!("failed to initialize Loci MT adapter ({})", model_path.display()))?;
+        let inner = LociTranslator::init(&model_path).with_context(|| {
+            format!(
+                "failed to initialize Loci MT adapter ({})",
+                model_path.display()
+            )
+        })?;
         Ok(Self { inner })
     }
 }
@@ -154,5 +184,50 @@ impl TtsAdapter for CommandTtsAdapter {
         })
         .map(|_| ())
         .map_err(|e| anyhow!("command TTS adapter failed: {e}"))
+    }
+}
+
+pub struct QwenTtsAdapter;
+
+impl QwenTtsAdapter {
+    pub fn new() -> Result<Self> {
+        Err(anyhow!(
+            "qwen3-tts adapter slot is scaffolded but this build does not yet include qwen3-tts-rs; wire a concrete adapter or a Loci-governed plugin before selecting qwen3-tts"
+        ))
+    }
+}
+
+impl TtsAdapter for QwenTtsAdapter {
+    fn adapter_name(&self) -> &'static str {
+        "qwen3-tts"
+    }
+
+    fn speak(&self, _request: TtsPlaybackRequest) -> Result<()> {
+        Err(anyhow!("qwen3-tts adapter is not available in this build"))
+    }
+}
+
+pub fn create_realtime_asr_adapter(
+    engine: &str,
+    config: AsrConfig,
+    streaming: StreamingConfig,
+) -> Result<Box<dyn RealtimeAsrAdapter>> {
+    match engine.trim().to_ascii_lowercase().as_str() {
+        // Keep legacy UI/config ids working while the runtime is still backed by the
+        // existing streaming ASR stack. The adapter boundary now makes this explicit.
+        "" | "streaming" | "streaming-asr" | "streaming-sherpa" | "sherpa" | "whisper"
+        | "sensevoice" | "vosk" => Ok(Box::new(StreamingAsrAdapter::new(config, streaming)?)),
+        "qwen3-asr" => Ok(Box::new(QwenAsrAdapter::new(config, streaming)?)),
+        other => Err(anyhow!("Unsupported ASR engine: {other}")),
+    }
+}
+
+pub fn create_tts_adapter(engine: &str) -> Result<Box<dyn TtsAdapter>> {
+    match engine.trim().to_ascii_lowercase().as_str() {
+        "" | "sherpa-melo" | "edge-tts" | "custom" | "piper" | "system" => {
+            Ok(Box::new(CommandTtsAdapter::new()))
+        }
+        "qwen3-tts" => Ok(Box::new(QwenTtsAdapter::new()?)),
+        other => Err(anyhow!("Unsupported TTS engine: {other}")),
     }
 }

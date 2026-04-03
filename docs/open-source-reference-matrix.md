@@ -147,6 +147,17 @@ Reason:
 4. Introduce a `QwenTtsAdapter` placeholder contract aligned with cloning and streaming output.
 5. Keep Python runtime only as a bounded deterministic-MT fallback.
 
+## Current repo status
+
+As of 2026-04-03, the host code now reflects this matrix directly:
+
+- realtime ASR selection is carried through settings, session config, IPC, and pipeline runtime
+- realtime TTS selection is carried through settings and pipeline runtime
+- `QwenAsrAdapter` and `QwenTtsAdapter` exist as explicit scaffold slots
+- the scaffolded `qwen3-*` engines fail fast with a clear unsupported/build-missing message
+
+This is deliberate: the repo now has the right pluggable seams for `qwen3-asr-rs` and `qwen3-tts-rs`, without pretending the integration is complete before a concrete buildable adapter is wired in.
+
 ## Source links
 
 - `qwen3-asr-rs` docs.rs: https://docs.rs/crate/qwen3-asr-rs/0.2.0

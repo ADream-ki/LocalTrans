@@ -557,6 +557,7 @@ function SettingsPage() {
                     >
                       <option value="sherpa-melo">Sherpa Melo (离线推荐)</option>
                       <option value="edge-tts">Edge TTS (在线)</option>
+                      <option value="qwen3-tts">Qwen3-TTS (适配器预留)</option>
                       <option value="custom">自定义音色</option>
                       <option value="piper">Piper (离线)</option>
                       <option value="system">系统语音</option>
@@ -587,6 +588,12 @@ function SettingsPage() {
                     </div>
                   )}
                 </div>
+
+                {ttsEngine === "qwen3-tts" && (
+                  <div className="text-xs text-warning bg-warning/5 border border-warning/20 rounded-medium px-s py-s">
+                    当前仓库已预留 `qwen3-tts-rs` 适配器槽位，用于后续接入多语言流式合成与音色克隆；本次重构版本会明确提示“未编译接入”，不会静默回退到其他 TTS。
+                  </div>
+                )}
 
                 {/* Custom Voice Settings */}
                 {ttsEngine === "custom" && (
@@ -786,6 +793,7 @@ function SettingsPage() {
                   <option value="whisper">Whisper</option>
                   <option value="sensevoice">SenseVoice</option>
                   <option value="vosk">Vosk</option>
+                  <option value="qwen3-asr">Qwen3-ASR (适配器预留)</option>
                 </select>
               </div>
               <div>
@@ -803,6 +811,11 @@ function SettingsPage() {
                 </select>
               </div>
             </div>
+            {asrEngine === "qwen3-asr" && (
+              <div className="text-xs text-warning bg-warning/5 border border-warning/20 rounded-medium px-s py-s">
+                `qwen3-asr-rs` 已作为目标适配器纳入架构，但当前构建先保留显式占位，方便后续以插件或独立 crate 方式接入，不会伪装成现有本地 ASR。
+              </div>
+            )}
             <div className="grid grid-cols-2 gap-m">
               <div>
                 <label className="text-xs text-text-secondary block mb-xs">源语言</label>

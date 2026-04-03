@@ -58,7 +58,9 @@ fn main() -> ExitCode {
                 }
                 Ok(None) => {}
                 Err(err) => {
-                    emit_error(AppError::InvalidState(format!("ipc dispatch failed: {err}")));
+                    emit_error(AppError::InvalidState(format!(
+                        "ipc dispatch failed: {err}"
+                    )));
                     return ExitCode::from(1);
                 }
             }
@@ -150,13 +152,16 @@ fn run_cli(command: Commands) -> Result<(), AppError> {
             emit_json(commands::session::get_session_history_cli(Some(count)))
         }
         Commands::SessionClearHistory => emit_json(commands::session::clear_session_history_cli()),
-        Commands::SessionExportHistory { output } => emit_json(commands::session::export_history_cli(
-            output.map(|p| p.display().to_string()),
-        )),
+        Commands::SessionExportHistory { output } => emit_json(
+            commands::session::export_history_cli(output.map(|p| p.display().to_string())),
+        ),
         Commands::SessionUpdateLanguages {
             source_lang,
             target_lang,
-        } => emit_json(commands::session::update_languages_cli(source_lang, target_lang)),
+        } => emit_json(commands::session::update_languages_cli(
+            source_lang,
+            target_lang,
+        )),
         Commands::TranslateText {
             text,
             source_lang,
@@ -177,9 +182,9 @@ fn run_cli(command: Commands) -> Result<(), AppError> {
         Commands::TtsDefaultVoice { language } => {
             emit_json(commands::tts::get_default_tts_voice(language))
         }
-        Commands::TtsCustomVoices { models_dir } => emit_json(commands::tts::list_custom_voice_models(
-            models_dir.map(|p| p.display().to_string()),
-        )),
+        Commands::TtsCustomVoices { models_dir } => emit_json(
+            commands::tts::list_custom_voice_models(models_dir.map(|p| p.display().to_string())),
+        ),
         Commands::ConfigSet { key, value } => {
             let parsed = serde_json::from_str::<serde_json::Value>(&value)
                 .unwrap_or_else(|_| serde_json::Value::String(value));
@@ -223,6 +228,7 @@ fn to_ipc_command(command: &Commands) -> IpcCommand {
         } => IpcCommand::SessionStart {
             source_lang: source_lang.clone(),
             target_lang: target_lang.clone(),
+            asr_engine: None,
             translation_engine: translation_engine.clone(),
             bidirectional: *bidirectional,
             latency_profile: Some(latency_profile.clone()),

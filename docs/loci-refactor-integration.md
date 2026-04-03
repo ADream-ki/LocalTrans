@@ -90,6 +90,27 @@ The host runtime reads these keys from `.localtrans-config.json`:
 
 This keeps the runtime aligned with the `Loci-refactor` design where inference, model, hardware, workflow, event bus, plugin manager, and UI host are all governed seams.
 
+## Realtime adapter status
+
+The realtime host now carries explicit engine identity across settings, session IPC, and pipeline runtime:
+
+- `asrEngine`
+- `translationEngine`
+- `ttsEngine`
+
+Current behavior:
+
+- translation uses explicit MT adapters (`LociMtAdapter`, `DeterministicMtAdapter`)
+- ASR is instantiated through a runtime adapter factory instead of direct pipeline wiring
+- TTS is instantiated through a runtime adapter factory instead of a hardcoded command bridge
+
+Scaffolded engine slots:
+
+- `qwen3-asr`
+- `qwen3-tts`
+
+These slots are intentionally explicit placeholders for the next integration stage. In the current build they fail fast with a clear "adapter not compiled/wired" error instead of silently falling back to the legacy backend.
+
 The external engine reference matrix for the next migration stages lives in:
 
 - `docs/open-source-reference-matrix.md`

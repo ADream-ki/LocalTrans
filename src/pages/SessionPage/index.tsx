@@ -133,6 +133,7 @@ function SessionPage() {
     sourceLang,
     targetLang,
     bidirectional,
+    asrEngine,
     translationEngine,
     audioDevices,
     selectedInputDevice,
@@ -147,10 +148,12 @@ function SessionPage() {
     setInputDevice,
     setPeerInputDevice,
     setAudioDevices,
+    setAsrEngine,
     setTranslationEngine,
   } = useSessionStore();
 
   const {
+    asrEngine: settingsAsrEngine,
     ttsEnabled,
     ttsEngine,
     ttsAutoPlay,
@@ -163,6 +166,7 @@ function SessionPage() {
     streamTranslationMinChars,
     streamTtsIntervalMs,
     streamTtsMinChars,
+    setAsrEngine: setSettingsAsrEngine,
     setStreamTranslationIntervalMs,
     setStreamTranslationMinChars,
     setStreamTtsIntervalMs,
@@ -223,11 +227,17 @@ function SessionPage() {
 
   useEffect(() => {
     if (isRunning) return;
-    const normalizedEngine = settingsTranslationEngine === "loci" ? "loci" : "nllb";
-    if (translationEngine !== normalizedEngine) {
-      setTranslationEngine(normalizedEngine);
+    if (translationEngine !== settingsTranslationEngine) {
+      setTranslationEngine(settingsTranslationEngine);
     }
   }, [isRunning, settingsTranslationEngine, translationEngine, setTranslationEngine]);
+
+  useEffect(() => {
+    if (isRunning) return;
+    if (asrEngine !== settingsAsrEngine) {
+      setAsrEngine(settingsAsrEngine);
+    }
+  }, [isRunning, asrEngine, settingsAsrEngine, setAsrEngine]);
 
   useEffect(() => {
     let cancelled = false;
@@ -852,14 +862,35 @@ function SessionPage() {
             <Mic size={16} className="text-primary" />
             ASR 引擎
           </h3>
-          <div className="text-s text-text-secondary">
-            Sherpa ZipFormer (离线)
-            {runtimeStatus?.asr?.ready ? (
-              <span className="ml-s text-xs text-success">已就绪</span>
-            ) : (
-              <span className="ml-s text-xs text-warning">未就绪</span>
-            )}
+          <select
+            value={asrEngine}
+            onChange={(e) => {
+              const next = e.target.value as typeof asrEngine;
+              setAsrEngine(next);
+              setSettingsAsrEngine(next);
+            }}
+            disabled={isRunning}
+            className="select-field text-s"
+          >
+            <option value="whisper">Whisper 兼容模式</option>
+            <option value="sensevoice">SenseVoice 兼容模式</option>
+            <option value="vosk">Vosk 兼容模式</option>
+            <option value="qwen3-asr">Qwen3-ASR (预留槽位)</option>
+          </select>
+          <div className="mt-s text-s text-text-secondary">
+            {asrEngine === "qwen3-asr" ? "Qwen3-ASR 适配器预留" : "当前本地流式 ASR 运行时"}
+            {asrEngine !== "qwen3-asr" &&
+              (runtimeStatus?.asr?.ready ? (
+                <span className="ml-s text-xs text-success">已就绪</span>
+              ) : (
+                <span className="ml-s text-xs text-warning">未就绪</span>
+              ))}
           </div>
+          {asrEngine === "qwen3-asr" && (
+            <div className="mt-xs text-xs text-warning break-words">
+              当前构建只暴露 `qwen3-asr` 适配器槽位；如果直接启动会得到明确的“未接入”错误，而不是回退到其他 ASR。
+            </div>
+          )}
           {runtimeStatus?.asr?.path && (
             <div className="mt-xs text-xs font-mono text-text-tertiary break-words">
               {runtimeStatus.asr.path}
@@ -991,11 +1022,13 @@ function SessionPage() {
           {!isRunning ? (
             <button
               onClick={startSession}
-              disabled={runtimeStatus ? !runtimeStatus.asr.ready : false}
+              disabled={runtimeStatus ? asrEngine !== "qwen3-asr" && !runtimeStatus.asr.ready : false}
               className="btn-primary flex-1 flex items-center justify-center gap-s"
             >
               <Play size={16} />
-              {runtimeStatus && !runtimeStatus.asr.ready ? "需要 ASR 模型" : "开始"}
+              {runtimeStatus && asrEngine !== "qwen3-asr" && !runtimeStatus.asr.ready
+                ? "需要 ASR 模型"
+                : "开始"}
             </button>
           ) : (
             <>

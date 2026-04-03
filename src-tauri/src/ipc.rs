@@ -36,6 +36,7 @@ pub enum IpcCommand {
     SessionStart {
         source_lang: String,
         target_lang: String,
+        asr_engine: Option<String>,
         translation_engine: Option<String>,
         bidirectional: bool,
         latency_profile: Option<String>,
@@ -133,11 +134,14 @@ pub fn try_send_command(command: IpcCommand) -> Result<Option<Value>, String> {
     let _ = stream.set_write_timeout(Some(Duration::from_secs(2)));
 
     let req = IpcRequest { command };
-    let req_text = serde_json::to_string(&req).map_err(|e| format!("encode ipc request failed: {e}"))?;
+    let req_text =
+        serde_json::to_string(&req).map_err(|e| format!("encode ipc request failed: {e}"))?;
     stream
         .write_all(format!("{req_text}\n").as_bytes())
         .map_err(|e| format!("send ipc request failed: {e}"))?;
-    stream.flush().map_err(|e| format!("flush ipc request failed: {e}"))?;
+    stream
+        .flush()
+        .map_err(|e| format!("flush ipc request failed: {e}"))?;
 
     let mut line = String::new();
     let mut reader = BufReader::new(stream);
@@ -153,7 +157,9 @@ pub fn try_send_command(command: IpcCommand) -> Result<Option<Value>, String> {
     if resp.ok {
         Ok(Some(resp.payload.unwrap_or(Value::Null)))
     } else {
-        Err(resp.error.unwrap_or_else(|| "unknown ipc error".to_string()))
+        Err(resp
+            .error
+            .unwrap_or_else(|| "unknown ipc error".to_string()))
     }
 }
 
@@ -184,8 +190,8 @@ fn handle_client(mut stream: TcpStream, app: AppHandle) -> AppResult<()> {
             error: Some(err.to_string()),
         },
     };
-    let text =
-        serde_json::to_string(&resp).map_err(|e| AppError::Io(format!("ipc encode failed: {e}")))?;
+    let text = serde_json::to_string(&resp)
+        .map_err(|e| AppError::Io(format!("ipc encode failed: {e}")))?;
     stream
         .write_all(format!("{text}\n").as_bytes())
         .map_err(|e| AppError::Io(format!("ipc write failed: {e}")))?;
@@ -211,6 +217,7 @@ fn execute(command: IpcCommand, app: AppHandle) -> AppResult<Value> {
         IpcCommand::SessionStart {
             source_lang,
             target_lang,
+            asr_engine,
             translation_engine,
             bidirectional,
             latency_profile,
@@ -220,6 +227,7 @@ fn execute(command: IpcCommand, app: AppHandle) -> AppResult<Value> {
                 commands::session::SessionConfig {
                     source_lang,
                     target_lang,
+                    asr_engine,
                     loci_enhanced: matches!(translation_engine.as_deref(), Some("loci")),
                     translation_engine,
                     input_device: None,
@@ -268,7 +276,10 @@ fn execute(command: IpcCommand, app: AppHandle) -> AppResult<Value> {
         IpcCommand::SessionUpdateLanguages {
             source_lang,
             target_lang,
-        } => to_json(commands::session::update_languages_cli(source_lang, target_lang)),
+        } => to_json(commands::session::update_languages_cli(
+            source_lang,
+            target_lang,
+        )),
         IpcCommand::TranslateText {
             text,
             source_lang,

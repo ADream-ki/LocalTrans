@@ -16,6 +16,7 @@ use crate::session_bus;
 pub struct SessionConfig {
     pub source_lang: String,
     pub target_lang: String,
+    pub asr_engine: Option<String>,
     pub translation_engine: Option<String>,
     pub input_device: Option<String>,
     pub peer_input_device: Option<String>,
@@ -152,7 +153,9 @@ fn ensure_not_running() -> AppResult<()> {
     if let Some(pipe) = current.as_ref() {
         let state = rt().block_on(pipe.get_state());
         if matches!(state, PipelineState::Running | PipelineState::Initializing) {
-            return Err(AppError::InvalidState("session is already running".to_string()));
+            return Err(AppError::InvalidState(
+                "session is already running".to_string(),
+            ));
         }
     }
     Ok(())
@@ -160,11 +163,14 @@ fn ensure_not_running() -> AppResult<()> {
 
 fn cfg_to_pipeline(config: SessionConfig) -> PipelineConfig {
     let latency_profile = config.latency_profile.clone();
+    let asr_engine = resolved_asr_engine(config.asr_engine.as_deref());
     let translation_engine =
         super::translation::resolved_translation_engine(config.translation_engine.as_deref());
+    let tts_engine = resolved_tts_engine(config.tts_engine.as_deref());
     let mut pipeline = PipelineConfig {
         source_lang: config.source_lang,
         target_lang: config.target_lang,
+        asr_engine,
         translation_engine: translation_engine.clone(),
         input_device: config.input_device,
         peer_input_device: config.peer_input_device,
@@ -193,9 +199,7 @@ fn cfg_to_pipeline(config: SessionConfig) -> PipelineConfig {
     if let Some(v) = config.tts_auto_play {
         pipeline.tts_auto_play = v;
     }
-    if let Some(v) = config.tts_engine {
-        pipeline.tts_engine = v;
-    }
+    pipeline.tts_engine = tts_engine;
     if let Some(v) = config.tts_voice {
         pipeline.tts_voice = v;
     }
@@ -218,6 +222,43 @@ fn cfg_to_pipeline(config: SessionConfig) -> PipelineConfig {
         pipeline.stream_tts_min_chars = usize::try_from(v).unwrap_or(8).clamp(2, 128);
     }
     pipeline
+}
+
+fn resolved_asr_engine(requested: Option<&str>) -> String {
+    requested
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| value.to_ascii_lowercase())
+        .or_else(|| super::config::get_string("asrEngine").map(|value| value.to_ascii_lowercase()))
+        .unwrap_or_else(|| "whisper".to_string())
+}
+
+fn resolved_tts_engine(requested: Option<&str>) -> String {
+    requested
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| value.to_ascii_lowercase())
+        .or_else(|| super::config::get_string("ttsEngine").map(|value| value.to_ascii_lowercase()))
+        .unwrap_or_else(|| "sherpa-melo".to_string())
+}
+
+#[cfg(feature = "mock-asr")]
+fn ensure_supported_asr_build() -> AppResult<()> {
+    Err(AppError::InvalidState(
+        "This build uses mock-asr and cannot provide real-time accurate transcription. Rebuild without mock-asr.".to_string(),
+    ))
+}
+
+#[cfg(all(not(feature = "mock-asr"), not(feature = "sherpa-backend")))]
+fn ensure_supported_asr_build() -> AppResult<()> {
+    Err(AppError::InvalidState(
+        "This build has no real ASR backend (sherpa-backend missing). Rebuild with sherpa-backend.".to_string(),
+    ))
+}
+
+#[cfg(all(not(feature = "mock-asr"), feature = "sherpa-backend"))]
+fn ensure_supported_asr_build() -> AppResult<()> {
+    Ok(())
 }
 
 fn write_runtime_state(
@@ -294,19 +335,14 @@ fn apply_pending_control(pipe: Arc<RealtimePipeline>) {
 
 #[tauri::command]
 pub fn start_session(app: AppHandle, config: SessionConfig) -> AppResult<()> {
-    #[cfg(feature = "mock-asr")]
-    {
+    let asr_engine = resolved_asr_engine(config.asr_engine.as_deref());
+    if asr_engine == "qwen3-asr" {
         return Err(AppError::InvalidState(
-            "This build uses mock-asr and cannot provide real-time accurate transcription. Rebuild without mock-asr.".to_string(),
+            "qwen3-asr adapter slot is scaffolded, but this build does not yet include a concrete qwen3-asr backend. Please switch ASR engine or wire qwen3_asr_rs/Loci plugin first.".to_string(),
         ));
     }
 
-    #[cfg(not(feature = "sherpa-backend"))]
-    {
-        return Err(AppError::InvalidState(
-            "This build has no real ASR backend (sherpa-backend missing). Rebuild with sherpa-backend.".to_string(),
-        ));
-    }
+    ensure_supported_asr_build()?;
 
     ensure_not_running()?;
     if !super::model::has_ready_model("asr")? {
@@ -445,7 +481,10 @@ pub fn session_status_cli() -> AppResult<SessionStatus> {
     if let Some(pipe) = pipe {
         apply_pending_control(pipe.clone());
         let st = rt().block_on(pipe.get_state());
-        if matches!(st, PipelineState::Running | PipelineState::Paused | PipelineState::Initializing) {
+        if matches!(
+            st,
+            PipelineState::Running | PipelineState::Paused | PipelineState::Initializing
+        ) {
             update_runtime_status(match st {
                 PipelineState::Running => "running",
                 PipelineState::Paused => "paused",
@@ -553,9 +592,11 @@ pub fn clear_session_history_cli() -> AppResult<()> {
 pub fn export_history_cli(output: Option<String>) -> AppResult<String> {
     let items = get_session_history_cli(Some(100_000))?;
     let json = serde_json::to_string_pretty(&items).map_err(|e| AppError::Io(e.to_string()))?;
-    let out = output
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|| std::env::current_dir().unwrap_or_default().join("session-history-export.json"));
+    let out = output.map(std::path::PathBuf::from).unwrap_or_else(|| {
+        std::env::current_dir()
+            .unwrap_or_default()
+            .join("session-history-export.json")
+    });
     std::fs::write(&out, json)?;
     Ok(out.display().to_string())
 }
@@ -643,7 +684,10 @@ fn is_english_only_asr_model() -> bool {
 }
 
 fn resolve_asr_model_dir() -> Option<std::path::PathBuf> {
-    let base = dirs::data_local_dir()?.join("LocalTrans").join("models").join("asr");
+    let base = dirs::data_local_dir()?
+        .join("LocalTrans")
+        .join("models")
+        .join("asr");
     if has_required_asr_files(&base) {
         return Some(base);
     }

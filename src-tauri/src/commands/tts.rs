@@ -148,8 +148,7 @@ fn save_custom_voice_profiles(profiles: &[CustomVoiceProfile]) -> AppResult<()> 
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
-    let text =
-        serde_json::to_string_pretty(profiles).map_err(|e| AppError::Io(e.to_string()))?;
+    let text = serde_json::to_string_pretty(profiles).map_err(|e| AppError::Io(e.to_string()))?;
     fs::write(path, text)?;
     Ok(())
 }
@@ -214,10 +213,14 @@ pub fn save_custom_voice_profile(
     };
 
     if profile.name.is_empty() {
-        return Err(AppError::InvalidState("Profile name cannot be empty".to_string()));
+        return Err(AppError::InvalidState(
+            "Profile name cannot be empty".to_string(),
+        ));
     }
     if profile.model_path.is_empty() {
-        return Err(AppError::InvalidState("Model path cannot be empty".to_string()));
+        return Err(AppError::InvalidState(
+            "Model path cannot be empty".to_string(),
+        ));
     }
     let validation = validate_profile(&profile);
     if !validation.ok {
@@ -239,14 +242,18 @@ pub fn delete_custom_voice_profile(profile_id: String) -> AppResult<()> {
     let before = profiles.len();
     profiles.retain(|p| p.id != profile_id);
     if profiles.len() == before {
-        return Err(AppError::NotFound("Custom voice profile not found".to_string()));
+        return Err(AppError::NotFound(
+            "Custom voice profile not found".to_string(),
+        ));
     }
     save_custom_voice_profiles(&profiles)?;
     Ok(())
 }
 
 #[tauri::command]
-pub fn validate_custom_voice_profile(profile_id: String) -> AppResult<CustomVoiceProfileValidation> {
+pub fn validate_custom_voice_profile(
+    profile_id: String,
+) -> AppResult<CustomVoiceProfileValidation> {
     let profile = resolve_custom_voice_profile(&profile_id)?;
     Ok(validate_profile(&profile))
 }
@@ -280,7 +287,9 @@ pub fn get_default_tts_voice(language: String) -> AppResult<Option<String>> {
 }
 
 #[tauri::command]
-pub fn list_custom_voice_models(models_dir: Option<String>) -> AppResult<Vec<CustomVoiceModelInfo>> {
+pub fn list_custom_voice_models(
+    models_dir: Option<String>,
+) -> AppResult<Vec<CustomVoiceModelInfo>> {
     let path = match models_dir {
         Some(p) => PathBuf::from(p),
         None => {
@@ -297,7 +306,8 @@ pub fn list_custom_voice_models(models_dir: Option<String>) -> AppResult<Vec<Cus
         return Ok(Vec::new());
     }
 
-    let models = tts::custom_voice::CustomVoiceEngine::list_custom_voices(&path).map_err(to_app_error)?;
+    let models =
+        tts::custom_voice::CustomVoiceEngine::list_custom_voices(&path).map_err(to_app_error)?;
     Ok(models
         .into_iter()
         .map(|m| CustomVoiceModelInfo {
@@ -342,8 +352,7 @@ pub fn speak_text(request: TtsRequest) -> AppResult<TtsResult> {
             "piper" => {
                 let model_path = PathBuf::from(&profile.model_path);
                 let text = request.text.clone();
-                rt
-                .block_on(async {
+                rt.block_on(async {
                     tokio::task::spawn_blocking(move || {
                         tts::piper_tts::PiperTtsEngine::synthesize_with_path(
                             &model_path,
@@ -412,7 +421,8 @@ pub fn speak_text(request: TtsRequest) -> AppResult<TtsResult> {
         })?
     };
 
-    let mut player = tts::playback::AudioPlayer::new(output_device.as_deref()).map_err(to_app_error)?;
+    let mut player =
+        tts::playback::AudioPlayer::new(output_device.as_deref()).map_err(to_app_error)?;
     player.set_volume(volume);
     let cancel = {
         let mut guard = playback_control()
@@ -456,7 +466,11 @@ pub fn run_tts_system_doctor_playback(
     let (system_ok, system_detail) = match system_probe {
         Ok(audio) => (
             true,
-            format!("system tts ok, sample_rate={}, samples={}", audio.sample_rate, audio.samples.len()),
+            format!(
+                "system tts ok, sample_rate={}, samples={}",
+                audio.sample_rate,
+                audio.samples.len()
+            ),
         ),
         Err(e) => (false, e),
     };
@@ -481,7 +495,10 @@ pub fn run_tts_system_doctor_playback(
 
     let rt = runtime()?;
     let (audio, reason_audio_engine) = if system_ok {
-        (synthesize_system_tts_audio(&reason_text, 1.0).map_err(to_app_error)?, "system".to_string())
+        (
+            synthesize_system_tts_audio(&reason_text, 1.0).map_err(to_app_error)?,
+            "system".to_string(),
+        )
     } else {
         let a = rt.block_on(async {
             synthesize_with_backend_fallback("edge-tts", &reason_text, &voice, 1.0, 0).await
@@ -502,7 +519,8 @@ pub fn run_tts_system_doctor_playback(
         None
     };
 
-    let mut player = tts::playback::AudioPlayer::new(request.output_device.as_deref()).map_err(to_app_error)?;
+    let mut player =
+        tts::playback::AudioPlayer::new(request.output_device.as_deref()).map_err(to_app_error)?;
     player.set_volume(1.0);
     let cancel = {
         let mut guard = playback_control()
@@ -535,6 +553,11 @@ async fn synthesize_with_backend_fallback(
         "edge-tts" => vec!["edge", "system"],
         "system" => vec!["system", "edge"],
         "piper" => vec!["piper", "edge", "system"],
+        "qwen3-tts" => {
+            return Err(AppError::InvalidState(
+                "qwen3-tts adapter slot is scaffolded, but this build does not yet include qwen3-tts-rs. Please switch TTS engine or wire the adapter first.".to_string(),
+            ))
+        }
         other => return Err(AppError::InvalidState(format!("Unknown TTS engine: {other}"))),
     };
 
@@ -589,7 +612,10 @@ async fn synthesize_single_backend(
         "piper" => {
             let _ = rate;
             let engine = tts::piper_tts::PiperTtsEngine::new();
-            engine.synthesize(text, voice).await.map_err(|e| e.to_string())
+            engine
+                .synthesize(text, voice)
+                .await
+                .map_err(|e| e.to_string())
         }
         other => Err(format!("Unsupported backend: {other}")),
     }
@@ -599,7 +625,9 @@ fn synthesize_system_tts_audio(text: &str, rate: f32) -> Result<tts::TtsAudio, S
     #[cfg(target_os = "windows")]
     {
         if let Some(reason) = tts::system_tts_cached_skip_reason() {
-            return Err(format!("System TTS skipped by cached host capability: {reason}"));
+            return Err(format!(
+                "System TTS skipped by cached host capability: {reason}"
+            ));
         }
 
         let mut wav_path = dirs::data_local_dir().unwrap_or_else(std::env::temp_dir);
@@ -612,9 +640,15 @@ fn synthesize_system_tts_audio(text: &str, rate: f32) -> Result<tts::TtsAudio, S
             .duration_since(UNIX_EPOCH)
             .map_err(|e| e.to_string())?
             .as_millis();
-        wav_path.push(format!("localtrans_system_tts_{ts}_{}.wav", std::process::id()));
+        wav_path.push(format!(
+            "localtrans_system_tts_{ts}_{}.wav",
+            std::process::id()
+        ));
 
-        let escaped_text = text.replace('\'', "''").replace('\r', " ").replace('\n', " ");
+        let escaped_text = text
+            .replace('\'', "''")
+            .replace('\r', " ")
+            .replace('\n', " ");
         let escaped_wav = wav_path.to_string_lossy().replace('\'', "''");
         let ps_rate = ((rate - 1.0) * 10.0).round().clamp(-10.0, 10.0) as i32;
         let script = format!(
@@ -633,7 +667,10 @@ fn synthesize_system_tts_audio(text: &str, rate: f32) -> Result<tts::TtsAudio, S
         );
 
         let mut last_err = String::new();
-        for exe in ["powershell.exe", "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe"] {
+        for exe in [
+            "powershell.exe",
+            "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+        ] {
             for sta in [true, false] {
                 match run_powershell_encoded(exe, sta, &script) {
                     Ok(_) => {
@@ -653,7 +690,8 @@ fn synthesize_system_tts_audio(text: &str, rate: f32) -> Result<tts::TtsAudio, S
             return Err(format!("System TTS failed: {last_err}"));
         }
 
-        let mut reader = hound::WavReader::open(&wav_path).map_err(|e| format!("Failed to read WAV: {e}"))?;
+        let mut reader =
+            hound::WavReader::open(&wav_path).map_err(|e| format!("Failed to read WAV: {e}"))?;
         let spec = reader.spec();
         let sample_rate = spec.sample_rate;
         let channels = spec.channels.max(1);
@@ -761,7 +799,11 @@ fn run_powershell_encoded(exe: &str, sta: bool, script: &str) -> Result<(), Stri
     }
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("status {:?} stderr={}", output.status.code(), stderr.trim()));
+        return Err(format!(
+            "status {:?} stderr={}",
+            output.status.code(),
+            stderr.trim()
+        ));
     }
     Ok(())
 }
@@ -803,8 +845,8 @@ fn write_wav_f32(path: &PathBuf, samples: &[f32], sample_rate: u32) -> Result<()
         bits_per_sample: 16,
         sample_format: hound::SampleFormat::Int,
     };
-    let mut writer =
-        hound::WavWriter::create(path, spec).map_err(|e| format!("Failed to create WAV {}: {}", path.display(), e))?;
+    let mut writer = hound::WavWriter::create(path, spec)
+        .map_err(|e| format!("Failed to create WAV {}: {}", path.display(), e))?;
     for s in samples {
         let clamped = s.clamp(-1.0, 1.0);
         writer
