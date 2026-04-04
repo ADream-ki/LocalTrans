@@ -118,6 +118,13 @@ interface WorkflowPreset {
   lociWorkflowPlugin: string;
 }
 
+interface ApplyWorkflowProfileResult {
+  profile: WorkflowPreset;
+  updatedKeys: string[];
+  preflight: SessionPreflightStatus;
+  message: string;
+}
+
 interface ReadinessCheckItem {
   id: string;
   label: string;
@@ -126,7 +133,7 @@ interface ReadinessCheckItem {
   critical: boolean;
 }
 
-const workflowPresets: WorkflowPreset[] = [
+const defaultWorkflowPresets: WorkflowPreset[] = [
   {
     id: "meeting-low-latency",
     name: "低延迟会议模式",
@@ -185,6 +192,7 @@ function ReadinessPage() {
   const [preflight, setPreflight] = useState<SessionPreflightStatus | null>(null);
   const [mtRuntime, setMtRuntime] = useState<MtRuntimeCheck | null>(null);
   const [virtualDriver, setVirtualDriver] = useState<VirtualDriverCheckResult | null>(null);
+  const [workflowPresets, setWorkflowPresets] = useState<WorkflowPreset[]>(defaultWorkflowPresets);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -193,16 +201,20 @@ function ReadinessPage() {
   const runPrechecks = useCallback(async () => {
     setError(null);
     try {
-      const [nextRuntime, nextPreflight, nextMtRuntime, nextDriver] = await Promise.all([
+      const [nextRuntime, nextPreflight, nextMtRuntime, nextDriver, nextProfiles] = await Promise.all([
         invoke<RuntimeStatus>("get_runtime_status"),
         invoke<SessionPreflightStatus>("get_session_preflight"),
         invoke<MtRuntimeCheck>("check_mt_runtime"),
         invoke<VirtualDriverCheckResult>("check_virtual_audio_driver"),
+        invoke<WorkflowPreset[]>("list_workflow_profiles").catch(() => defaultWorkflowPresets),
       ]);
       setRuntime(nextRuntime);
       setPreflight(nextPreflight);
       setMtRuntime(nextMtRuntime);
       setVirtualDriver(nextDriver);
+      setWorkflowPresets(
+        nextProfiles.length > 0 ? nextProfiles : defaultWorkflowPresets
+      );
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -328,28 +340,21 @@ function ReadinessPage() {
       setApplyingPresetId(preset.id);
       setError(null);
       try {
-        const currentConfig =
-          (await invoke<Record<string, unknown>>("get_app_config").catch(() => ({}))) || {};
-        const nextConfig: Record<string, unknown> = {
-          ...currentConfig,
-          translationEngine: preset.translationEngine,
-          asrEngine: preset.asrEngine,
-          ttsEngine: preset.ttsEngine,
-          ttsEnabled: preset.ttsEnabled,
-          ttsAutoPlay: preset.ttsAutoPlay,
-          lociWorkflowPlugin: preset.lociWorkflowPlugin,
-        };
-        await invoke("set_app_config", { config: nextConfig });
+        const result = await invoke<ApplyWorkflowProfileResult>("apply_workflow_profile", {
+          request: { profileId: preset.id },
+        });
+        const applied = result.profile;
 
-        setTranslationEngine(preset.translationEngine);
-        setAsrEngine(preset.asrEngine);
-        setTtsEngine(preset.ttsEngine);
-        setTtsEnabled(preset.ttsEnabled);
-        setTtsAutoPlay(preset.ttsAutoPlay);
-        setLociWorkflowPlugin(preset.lociWorkflowPlugin);
-        setBidirectional(preset.bidirectional);
-        setSessionAsrEngine(preset.asrEngine);
-        setSessionTranslationEngine(preset.translationEngine);
+        setTranslationEngine(applied.translationEngine);
+        setAsrEngine(applied.asrEngine);
+        setTtsEngine(applied.ttsEngine);
+        setTtsEnabled(applied.ttsEnabled);
+        setTtsAutoPlay(applied.ttsAutoPlay);
+        setLociWorkflowPlugin(applied.lociWorkflowPlugin);
+        setBidirectional(applied.bidirectional);
+        setSessionAsrEngine(applied.asrEngine);
+        setSessionTranslationEngine(applied.translationEngine);
+        setPreflight(result.preflight);
 
         setRefreshing(true);
         await runPrechecks();
@@ -543,7 +548,7 @@ function ReadinessPage() {
             ))}
           </div>
           <div className="mt-m text-xs text-text-tertiary">
-            预设会同步写入 `set_app_config`，并更新 GUI 运行参数（ASR/翻译/TTS/workflow 插件）。
+            预设通过后端 `apply_workflow_profile` 落盘并回传 preflight，GUI 只负责展示和同步状态。
           </div>
         </GlassCard>
 

@@ -76,6 +76,8 @@ localtrans.exe loci-governance-snapshot
 localtrans.exe loci-workflow-policy
 localtrans.exe session-preflight
 localtrans.exe loci-rewriter-inventory
+localtrans.exe workflow-profiles
+localtrans.exe workflow-apply --profile-id meeting-low-latency
 localtrans.exe loci-load-plugins --path D:\plugins\loci --source-kind directory
 localtrans.exe loci-activate-rewriter --component workflow --plugin-name my-workflow-plugin
 
@@ -83,6 +85,8 @@ localtrans.exe call --name get_loci_runtime_snapshot --args-json "{}"
 localtrans.exe call --name get_loci_governance_snapshot --args-json "{}"
 localtrans.exe call --name get_loci_workflow_policy --args-json "{}"
 localtrans.exe call --name get_session_preflight --args-json "{}"
+localtrans.exe call --name list_workflow_profiles --args-json "{}"
+localtrans.exe call --name apply_workflow_profile --args-json "{\"profile_id\":\"privacy-local-only\"}"
 localtrans.exe call --name load_loci_plugins --args-json "{\"path\":\"D:\\\\plugins\\\\loci\",\"source_kind\":\"directory\"}"
 localtrans.exe call --name activate_loci_rewriter --args-json "{\"component\":\"inference\",\"plugin_name\":\"my-inference-plugin\"}"
 ```

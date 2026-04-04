@@ -241,10 +241,10 @@ pub fn execute_named(name: &str, args: Value, app: Option<AppHandle>) -> AppResu
 
         "get_runtime_status" => Ok(serde_json::to_value(super::system::get_runtime_status()?)
             .map_err(|e| AppError::Io(e.to_string()))?),
-        "get_session_preflight" => Ok(serde_json::to_value(
-            super::system::get_session_preflight()?,
-        )
-        .map_err(|e| AppError::Io(e.to_string()))?),
+        "get_session_preflight" => Ok(
+            serde_json::to_value(super::system::get_session_preflight()?)
+                .map_err(|e| AppError::Io(e.to_string()))?,
+        ),
         "get_runtime_adapter_inventory" => Ok(serde_json::to_value(
             super::system::get_runtime_adapter_inventory()?,
         )
@@ -253,6 +253,27 @@ pub fn execute_named(name: &str, args: Value, app: Option<AppHandle>) -> AppResu
             .map_err(|e| AppError::Io(e.to_string()))?),
         "check_mt_runtime" => Ok(serde_json::to_value(super::system::check_mt_runtime()?)
             .map_err(|e| AppError::Io(e.to_string()))?),
+        "list_workflow_profiles" => Ok(serde_json::to_value(
+            super::system::list_workflow_profiles()?,
+        )
+        .map_err(|e| AppError::Io(e.to_string()))?),
+        "apply_workflow_profile" => {
+            let profile_id = args
+                .get("profile_id")
+                .or_else(|| args.get("profileId"))
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|v| !v.is_empty())
+                .ok_or_else(|| {
+                    AppError::InvalidState("missing string arg: profile_id".to_string())
+                })?;
+            Ok(serde_json::to_value(super::system::apply_workflow_profile(
+                super::system::ApplyWorkflowProfileRequest {
+                    profile_id: profile_id.to_string(),
+                },
+            )?)
+            .map_err(|e| AppError::Io(e.to_string()))?)
+        }
         "get_audio_devices" => Ok(serde_json::to_value(super::audio::get_audio_devices()?)
             .map_err(|e| AppError::Io(e.to_string()))?),
         "get_tts_output_devices" => Ok(serde_json::to_value(

@@ -90,6 +90,10 @@ pub enum IpcCommand {
     },
     LogStatus,
     MtRuntimeCheck,
+    WorkflowProfiles,
+    WorkflowApply {
+        profile_id: String,
+    },
     TtsVoices {
         language: Option<String>,
     },
@@ -365,6 +369,12 @@ fn execute(command: IpcCommand, app: AppHandle) -> AppResult<Value> {
         )),
         IpcCommand::LogStatus => to_json(commands::system::get_log_status()),
         IpcCommand::MtRuntimeCheck => to_json(commands::system::check_mt_runtime()),
+        IpcCommand::WorkflowProfiles => to_json(commands::system::list_workflow_profiles()),
+        IpcCommand::WorkflowApply { profile_id } => {
+            to_json(commands::system::apply_workflow_profile(
+                commands::system::ApplyWorkflowProfileRequest { profile_id },
+            ))
+        }
         IpcCommand::TtsVoices { language } => to_json(commands::tts::get_tts_voices(language)),
         IpcCommand::TtsConfig => to_json(commands::tts::get_tts_config()),
         IpcCommand::TtsDefaultVoice { language } => {

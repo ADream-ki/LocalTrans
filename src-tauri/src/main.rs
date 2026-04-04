@@ -233,6 +233,12 @@ fn run_cli(command: Commands) -> Result<(), AppError> {
         )),
         Commands::LogStatus => emit_json(commands::system::get_log_status()),
         Commands::MtRuntimeCheck => emit_json(commands::system::check_mt_runtime()),
+        Commands::WorkflowProfiles => emit_json(commands::system::list_workflow_profiles()),
+        Commands::WorkflowApply { profile_id } => {
+            emit_json(commands::system::apply_workflow_profile(
+                commands::system::ApplyWorkflowProfileRequest { profile_id },
+            ))
+        }
         Commands::TtsVoices { language } => emit_json(commands::tts::get_tts_voices(language)),
         Commands::TtsConfig => emit_json(commands::tts::get_tts_config()),
         Commands::TtsDefaultVoice { language } => {
@@ -359,6 +365,10 @@ fn to_ipc_command(command: &Commands) -> IpcCommand {
         },
         Commands::LogStatus => IpcCommand::LogStatus,
         Commands::MtRuntimeCheck => IpcCommand::MtRuntimeCheck,
+        Commands::WorkflowProfiles => IpcCommand::WorkflowProfiles,
+        Commands::WorkflowApply { profile_id } => IpcCommand::WorkflowApply {
+            profile_id: profile_id.clone(),
+        },
         Commands::TtsVoices { language } => IpcCommand::TtsVoices {
             language: language.clone(),
         },

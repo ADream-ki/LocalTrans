@@ -1,4 +1,4 @@
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -82,6 +82,143 @@ pub struct MtRuntimeCheck {
     pub message: String,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkflowProfileDescriptor {
+    pub id: String,
+    pub name: String,
+    pub description: String,
+    pub target_user: String,
+    pub translation_engine: String,
+    pub asr_engine: String,
+    pub tts_engine: String,
+    pub tts_enabled: bool,
+    pub tts_auto_play: bool,
+    pub bidirectional: bool,
+    pub latency_profile: String,
+    pub loci_workflow_plugin: String,
+    pub workflows: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ApplyWorkflowProfileRequest {
+    pub profile_id: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ApplyWorkflowProfileResult {
+    pub profile: WorkflowProfileDescriptor,
+    pub updated_keys: Vec<String>,
+    pub preflight: SessionPreflightStatus,
+    pub message: String,
+}
+
+#[derive(Debug, Clone)]
+struct WorkflowProfileSpec {
+    id: &'static str,
+    name: &'static str,
+    description: &'static str,
+    target_user: &'static str,
+    translation_engine: &'static str,
+    asr_engine: &'static str,
+    tts_engine: &'static str,
+    tts_enabled: bool,
+    tts_auto_play: bool,
+    bidirectional: bool,
+    latency_profile: &'static str,
+    loci_workflow_plugin: &'static str,
+    workflows: &'static [&'static str],
+}
+
+const WORKFLOW_PROFILES: &[WorkflowProfileSpec] = &[
+    WorkflowProfileSpec {
+        id: "meeting-low-latency",
+        name: "低延迟会议模式",
+        description: "优先实时性和自动播报，适合同传会议和销售演示。",
+        target_user: "sales-demo",
+        translation_engine: "loci",
+        asr_engine: "whisper",
+        tts_engine: "sherpa-melo",
+        tts_enabled: true,
+        tts_auto_play: true,
+        bidirectional: true,
+        latency_profile: "low-latency",
+        loci_workflow_plugin: "localtrans-meeting-low-latency",
+        workflows: &[
+            "speech.translate.realtime",
+            "speech.asr.whisper",
+            "speech.tts.sherpa-melo",
+            "speech.latency.low-latency",
+            "speech.tts.autoplay",
+            "speech.mode.bidirectional",
+            "speech.voice.clone",
+        ],
+    },
+    WorkflowProfileSpec {
+        id: "privacy-local-only",
+        name: "隐私本地模式",
+        description: "优先本地化语音链路，避免在线 TTS 依赖。",
+        target_user: "private-deployment",
+        translation_engine: "loci",
+        asr_engine: "whisper",
+        tts_engine: "piper",
+        tts_enabled: true,
+        tts_auto_play: false,
+        bidirectional: false,
+        latency_profile: "balanced",
+        loci_workflow_plugin: "localtrans-privacy-local-only",
+        workflows: &[
+            "speech.translate.realtime",
+            "speech.asr.whisper",
+            "speech.tts.piper",
+            "speech.latency.balanced",
+            "speech.tts.manual",
+            "speech.mode.unidirectional",
+        ],
+    },
+    WorkflowProfileSpec {
+        id: "caption-high-accuracy",
+        name: "高精度字幕模式",
+        description: "优先字幕稳定性和准确率，默认关闭自动播报。",
+        target_user: "caption-production",
+        translation_engine: "loci",
+        asr_engine: "sensevoice",
+        tts_engine: "piper",
+        tts_enabled: false,
+        tts_auto_play: false,
+        bidirectional: false,
+        latency_profile: "high-accuracy",
+        loci_workflow_plugin: "localtrans-caption-high-accuracy",
+        workflows: &[
+            "speech.translate.realtime",
+            "speech.asr.sensevoice",
+            "speech.tts.none",
+            "speech.latency.high-accuracy",
+            "speech.mode.unidirectional",
+        ],
+    },
+];
+
+fn to_workflow_profile_descriptor(spec: &WorkflowProfileSpec) -> WorkflowProfileDescriptor {
+    WorkflowProfileDescriptor {
+        id: spec.id.to_string(),
+        name: spec.name.to_string(),
+        description: spec.description.to_string(),
+        target_user: spec.target_user.to_string(),
+        translation_engine: spec.translation_engine.to_string(),
+        asr_engine: spec.asr_engine.to_string(),
+        tts_engine: spec.tts_engine.to_string(),
+        tts_enabled: spec.tts_enabled,
+        tts_auto_play: spec.tts_auto_play,
+        bidirectional: spec.bidirectional,
+        latency_profile: spec.latency_profile.to_string(),
+        loci_workflow_plugin: spec.loci_workflow_plugin.to_string(),
+        workflows: spec.workflows.iter().map(|v| v.to_string()).collect(),
+    }
+}
+
 fn build_preflight(
     requested_asr_engine: Option<&str>,
     requested_translation_engine: Option<&str>,
@@ -154,9 +291,8 @@ fn build_preflight(
                 stage: "workflow".to_string(),
                 severity: "warning".to_string(),
                 label: "Workflow 治理未接管".to_string(),
-                message:
-                    "当前 Loci 运行时没有激活 workflow rewriter，会退回宿主默认路由选择。"
-                        .to_string(),
+                message: "当前 Loci 运行时没有激活 workflow rewriter，会退回宿主默认路由选择。"
+                    .to_string(),
                 action: Some("open_settings_page".to_string()),
             });
         }
@@ -188,8 +324,7 @@ fn build_preflight(
                 stage: "tts".to_string(),
                 severity: "blocker".to_string(),
                 label: "Qwen3-TTS 尚未接入".to_string(),
-                message:
-                    "当前构建只暴露 qwen3-tts 适配器槽位，尚未包含可执行后端。".to_string(),
+                message: "当前构建只暴露 qwen3-tts 适配器槽位，尚未包含可执行后端。".to_string(),
                 action: Some("open_settings_page".to_string()),
             }),
             "sherpa-melo" | "piper" => {
@@ -213,8 +348,8 @@ fn build_preflight(
                         stage: "tts".to_string(),
                         severity: "blocker".to_string(),
                         label: "自定义音色未配置".to_string(),
-                        message:
-                            "当前选择了自定义音色，但没有可用的 profile 或模型路径。".to_string(),
+                        message: "当前选择了自定义音色，但没有可用的 profile 或模型路径。"
+                            .to_string(),
                         action: Some("open_settings_page".to_string()),
                     });
                 }
@@ -540,6 +675,71 @@ pub fn check_mt_runtime() -> AppResult<MtRuntimeCheck> {
         language_pairs,
         ready,
         message,
+    })
+}
+
+#[tauri::command]
+pub fn list_workflow_profiles() -> AppResult<Vec<WorkflowProfileDescriptor>> {
+    Ok(WORKFLOW_PROFILES
+        .iter()
+        .map(to_workflow_profile_descriptor)
+        .collect())
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub fn apply_workflow_profile(
+    request: ApplyWorkflowProfileRequest,
+) -> AppResult<ApplyWorkflowProfileResult> {
+    let profile_id = request.profile_id.trim().to_ascii_lowercase();
+    let Some(spec) = WORKFLOW_PROFILES.iter().find(|item| item.id == profile_id) else {
+        return Err(crate::error::AppError::InvalidState(format!(
+            "unknown workflow profile id: {profile_id}"
+        )));
+    };
+
+    let mut updated_keys = Vec::new();
+    let mut set_value = |key: &str, value: Value| -> AppResult<()> {
+        super::config::set_config_value(key.to_string(), value)?;
+        updated_keys.push(key.to_string());
+        Ok(())
+    };
+
+    set_value(
+        "translationEngine",
+        Value::String(spec.translation_engine.to_string()),
+    )?;
+    set_value("asrEngine", Value::String(spec.asr_engine.to_string()))?;
+    set_value("ttsEngine", Value::String(spec.tts_engine.to_string()))?;
+    set_value("ttsEnabled", Value::Bool(spec.tts_enabled))?;
+    set_value("ttsAutoPlay", Value::Bool(spec.tts_auto_play))?;
+    set_value(
+        "lociWorkflowPlugin",
+        Value::String(spec.loci_workflow_plugin.to_string()),
+    )?;
+    set_value("bidirectional", Value::Bool(spec.bidirectional))?;
+    set_value(
+        "latencyProfile",
+        Value::String(spec.latency_profile.to_string()),
+    )?;
+
+    let preflight = build_preflight(
+        Some(spec.asr_engine),
+        Some(spec.translation_engine),
+        Some(spec.tts_engine),
+        Some(spec.tts_enabled),
+        Some(spec.tts_auto_play),
+        Some(spec.bidirectional),
+        Some(spec.latency_profile),
+    )?;
+
+    Ok(ApplyWorkflowProfileResult {
+        profile: to_workflow_profile_descriptor(spec),
+        updated_keys,
+        preflight,
+        message: format!(
+            "Applied workflow profile '{}' with plugin '{}'",
+            spec.id, spec.loci_workflow_plugin
+        ),
     })
 }
 

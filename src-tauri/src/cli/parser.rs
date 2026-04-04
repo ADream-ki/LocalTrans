@@ -126,6 +126,11 @@ pub enum Commands {
     },
     LogStatus,
     MtRuntimeCheck,
+    WorkflowProfiles,
+    WorkflowApply {
+        #[arg(long)]
+        profile_id: String,
+    },
     TtsVoices {
         #[arg(long)]
         language: Option<String>,
