@@ -1,0 +1,2 @@
+[env]
+LIBCLANG_PATH = { value = "tools/llvm-portable/clang+llvm-22.1.1-x86_64-pc-windows-msvc/bin", relative = true }
