@@ -1,7 +1,7 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 
-export type Tab = "session" | "settings" | "model" | "diagnostics";
+export type Tab = "session" | "readiness" | "settings" | "model" | "diagnostics";
 
 interface UiState {
   activeTab: Tab;
@@ -27,7 +27,20 @@ export const useUiStore = create<UiState>()(
     }),
     {
       name: "localtrans-ui",
-      version: 1,
+      version: 2,
+      migrate: (persistedState, _version) => {
+        const state = (persistedState ?? {}) as Partial<UiState>;
+        if (
+          state.activeTab !== "session" &&
+          state.activeTab !== "readiness" &&
+          state.activeTab !== "settings" &&
+          state.activeTab !== "model" &&
+          state.activeTab !== "diagnostics"
+        ) {
+          state.activeTab = "session";
+        }
+        return state as UiState;
+      },
     }
   )
 );

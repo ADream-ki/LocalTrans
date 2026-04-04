@@ -1,0 +1,19 @@
+name = "localtrans-meeting-low-latency"
+version = "0.1.0"
+api_version = "1.0"
+target_tracks = ["ai_infra"]
+
+[contributes]
+workflows = [
+  "speech.translate.realtime",
+  "speech.asr.whisper",
+  "speech.tts.sherpa-melo",
+  "speech.latency.low-latency",
+  "speech.tts.autoplay",
+  "speech.mode.bidirectional",
+  "speech.voice.clone"
+]
+commands = ["localtrans:workflow-profile/meeting-low-latency"]
+
+[core_rewriters]
+workflow = true

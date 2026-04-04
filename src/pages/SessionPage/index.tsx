@@ -751,11 +751,16 @@ function SessionPage() {
   const handlePreflightAction = useCallback(
     (action?: string | null) => {
       switch (action) {
+        case "open_readiness_page":
+          setActiveTab("readiness");
+          break;
         case "open_model_page":
         case "download_loci_model":
         case "download_tts_model":
-        case "prepare_mt_runtime":
           setActiveTab("model");
+          break;
+        case "prepare_mt_runtime":
+          setActiveTab("readiness");
           break;
         case "open_settings_page":
           setActiveTab("settings");
@@ -1285,6 +1290,13 @@ function SessionPage() {
             </div>
           )}
           <div className="mt-s flex gap-s">
+            <button
+              type="button"
+              onClick={() => setActiveTab("readiness")}
+              className="px-s py-xs rounded-medium bg-bg-secondary text-xs text-text-secondary hover:bg-bg-tertiary transition-colors"
+            >
+              打开就绪中心
+            </button>
             <button
               type="button"
               onClick={() => setActiveTab("diagnostics")}

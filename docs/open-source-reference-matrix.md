@@ -155,6 +155,10 @@ As of 2026-04-03, the host code now reflects this matrix directly:
 - realtime TTS selection is carried through settings and pipeline runtime
 - `QwenAsrAdapter` and `QwenTtsAdapter` exist as explicit scaffold slots
 - the scaffolded `qwen3-*` engines fail fast with a clear unsupported/build-missing message
+- built-in workflow bundles now expose sellable product profiles:
+  - `localtrans-meeting-low-latency`
+  - `localtrans-privacy-local-only`
+  - `localtrans-caption-high-accuracy`
 
 This is deliberate: the repo now has the right pluggable seams for `qwen3-asr-rs` and `qwen3-tts-rs`, without pretending the integration is complete before a concrete buildable adapter is wired in.
 

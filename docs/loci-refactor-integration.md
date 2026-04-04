@@ -91,6 +91,14 @@ The dedicated CLI commands are the preferred operational surface for Loci govern
 
 `LocalTrans` now also ships a built-in manifest-first workflow bundle at `src-tauri/resources/loci-plugins/localtrans-speech-workflow`, and the Tauri bundle includes that resource directory. In a default `translationEngine=loci` setup, this gives the product an out-of-box workflow governance baseline even before the user adds external plugin directories.
 
+Additional built-in workflow bundles are now shipped for product scenarios:
+
+- `localtrans-meeting-low-latency`
+- `localtrans-privacy-local-only`
+- `localtrans-caption-high-accuracy`
+
+These bundles are discovered from the same built-in plugin directory and can be activated by setting `lociWorkflowPlugin`.
+
 ## Shared config keys
 
 The host runtime reads these keys from `.localtrans-config.json`:
@@ -130,6 +138,8 @@ Current behavior:
 - settings UI now exposes `lociPluginDirs` and `lociWorkflowPlugin`, so manifest-first workflow governance can be configured without editing `.localtrans-config.json` by hand
 - session UI now exposes a startup preflight so users see blockers and corrective actions before they hit runtime errors
 - app shell now exposes a global first-run onboarding modal instead of a model-page-only popup, so model readiness, workflow governance, device routing, and privacy posture are explained before the user starts a session
+- app shell now exposes a dedicated Readiness Center tab that aggregates preflight, workflow governance, MT runtime health, and privacy risk in one launch checklist
+- Readiness Center can apply built-in workflow presets in one click by syncing `translationEngine` / `asrEngine` / `ttsEngine` / `lociWorkflowPlugin`
 
 Current workflow declaration conventions recognized by `LocalTrans`:
 

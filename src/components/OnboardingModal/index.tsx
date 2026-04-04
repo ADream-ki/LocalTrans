@@ -136,11 +136,18 @@ export default function OnboardingModal() {
   const handleAction = useCallback(
     (action?: string | null) => {
       switch (action) {
+        case "open_readiness_page":
+          setActiveTab("readiness");
+          closeModelOnboarding();
+          break;
         case "open_model_page":
         case "download_loci_model":
         case "download_tts_model":
-        case "prepare_mt_runtime":
           setActiveTab("model");
+          closeModelOnboarding();
+          break;
+        case "prepare_mt_runtime":
+          setActiveTab("readiness");
           closeModelOnboarding();
           break;
         case "open_settings_page":
@@ -294,7 +301,17 @@ export default function OnboardingModal() {
 
           <div className="rounded-large border border-bg-tertiary bg-white p-m">
             <div className="text-sm font-medium text-text-primary mb-s">你现在该做什么</div>
-            <div className="grid grid-cols-3 gap-s text-sm">
+            <div className="grid grid-cols-4 gap-s text-sm">
+              <button
+                type="button"
+                onClick={() => {
+                  setActiveTab("readiness");
+                  closeModelOnboarding();
+                }}
+                className="px-m py-s rounded-medium bg-bg-secondary hover:bg-bg-tertiary text-text-primary transition-colors"
+              >
+                去做就绪检查
+              </button>
               <button
                 type="button"
                 onClick={() => {

@@ -1,0 +1,17 @@
+name = "localtrans-caption-high-accuracy"
+version = "0.1.0"
+api_version = "1.0"
+target_tracks = ["ai_infra"]
+
+[contributes]
+workflows = [
+  "speech.translate.realtime",
+  "speech.asr.sensevoice",
+  "speech.tts.none",
+  "speech.latency.high-accuracy",
+  "speech.mode.unidirectional"
+]
+commands = ["localtrans:workflow-profile/caption-high-accuracy"]
+
+[core_rewriters]
+workflow = true

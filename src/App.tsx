@@ -1,16 +1,18 @@
 import { useUiStore, type Tab } from "./stores/uiStore";
 import { useEffect } from "react";
 import SessionPage from "./pages/SessionPage";
+import ReadinessPage from "./pages/ReadinessPage";
 import SettingsPage from "./pages/SettingsPage";
 import ModelPage from "./pages/ModelPage";
 import DiagnosticsPage from "./pages/DiagnosticsPage";
 import OnboardingModal from "./components/OnboardingModal";
 import TitleBar from "./components/TitleBar";
-import { Mic, Settings, Package, Activity, Sparkles } from "lucide-react";
+import { Mic, CheckCircle2, Settings, Package, Activity, Sparkles } from "lucide-react";
 import { useRef } from "react";
 
 const tabs = [
   { id: "session" as Tab, label: "会话", icon: Mic },
+  { id: "readiness" as Tab, label: "就绪", icon: CheckCircle2 },
   { id: "settings" as Tab, label: "设置", icon: Settings },
   { id: "model" as Tab, label: "模型", icon: Package },
   { id: "diagnostics" as Tab, label: "诊断", icon: Activity },
@@ -76,6 +78,7 @@ function App() {
         {/* Page Content */}
         <div className="flex-1 overflow-hidden">
           {activeTab === "session" && <SessionPage />}
+          {activeTab === "readiness" && <ReadinessPage />}
           {activeTab === "settings" && <SettingsPage />}
           {activeTab === "model" && <ModelPage />}
           {activeTab === "diagnostics" && <DiagnosticsPage />}
