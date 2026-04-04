@@ -10,7 +10,9 @@ lerna-debug.log*
 node_modules
 dist
 dist-ssr
+artifacts
 *.local
+/.localtrans-config.json
 src-tauri/target
 target
 
