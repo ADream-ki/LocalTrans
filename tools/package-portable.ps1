@@ -72,6 +72,30 @@ $manifest = [ordered]@{
 $manifestPath = Join-Path $stagingRoot "portable-manifest.json"
 $manifest | ConvertTo-Json -Depth 4 | Set-Content -Path $manifestPath -Encoding UTF8
 
+$readmePath = Join-Path $stagingRoot "README-portable.txt"
+@"
+LocalTrans Portable Package
+===========================
+
+Contents:
+- $productName.exe
+- runtime DLLs
+- resources\loci-plugins
+- resources\mt-runtime
+- portable-manifest.json
+
+Usage:
+1. Extract the zip to a writable directory.
+2. Run $productName.exe.
+3. For CLI checks you can run:
+   $productName.exe workflow-profiles
+   $productName.exe workflow-apply --profile-id meeting-low-latency
+
+Notes:
+- LLVM/libclang is NOT required for end users.
+- This portable package already includes the app runtime DLLs and bundled resources.
+"@ | Set-Content -Path $readmePath -Encoding UTF8
+
 if (-not $SkipZip) {
   New-Item -ItemType Directory -Path $OutputDir -Force | Out-Null
   Compress-Archive -Path (Join-Path $stagingRoot "*") -DestinationPath $zipPath -CompressionLevel Optimal

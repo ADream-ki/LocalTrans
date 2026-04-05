@@ -19,9 +19,10 @@ It does the following:
 5. Builds the Tauri Windows release.
 6. Packages a portable bundle with runtime DLLs and bundled resources.
 7. Runs smoke tests against the built `localtrans.exe`.
-8. Generates `SHA256SUMS.txt` for downloadable artifacts.
-9. Uploads build artifacts.
-10. Publishes a GitHub Release automatically when the ref is a `v*` tag.
+8. Runs smoke tests against the extracted portable bundle.
+9. Generates `SHA256SUMS.txt` for downloadable artifacts.
+10. Uploads build artifacts.
+11. Publishes a GitHub Release automatically when the ref is a `v*` tag.
 
 ## Release artifacts
 
@@ -43,6 +44,7 @@ That package includes:
 - `resources/loci-plugins`
 - `resources/mt-runtime`
 - `portable-manifest.json`
+- `README-portable.txt`
 
 ## Local release build
 
@@ -72,4 +74,9 @@ The CI pipeline now validates the built release executable directly:
 - `localtrans.exe workflow-profiles`
 - `localtrans.exe workflow-apply --profile-id meeting-low-latency`
 
-This catches packaging regressions where the binary builds but cannot start correctly on a clean runner.
+The CI pipeline also validates the extracted portable bundle directly:
+
+- `artifacts\portable\...\localtrans.exe workflow-profiles`
+- `artifacts\portable\...\localtrans.exe workflow-apply --profile-id privacy-local-only`
+
+This catches packaging regressions where the binary builds but the shipped portable directory is incomplete.
