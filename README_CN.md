@@ -15,6 +15,8 @@ LocalTrans 以本地优先的实时闭环为核心：
 - GUI 与 CLI 共用同一命令层与运行时
 - 支持跨进程状态同步（CLI 可驱动正在运行的 GUI 会话）
 - 提供可直接分发的便携版 `localtrans.exe`
+- 通过锁定版本的 `Loci-refactor` 实现工作流治理式运行时
+- 内置“系统就绪中心”和“交付中心”，方便售前、实施、支持协同
 
 ## 重构后的结构
 
@@ -152,8 +154,14 @@ src-tauri/target/release/localtrans.exe
 | `session-export-history` | 导出历史 | `localtrans.exe session-export-history --output .\history.json` |
 | `session-update-languages` | 运行中切换语言方向 | `localtrans.exe session-update-languages --source-lang zh --target-lang en` |
 | `translate-text` | 单次文本翻译 | `localtrans.exe translate-text --text "你好" --source-lang zh --target-lang en` |
+| `session-preflight` | 查询启动阻塞项与生效运行时 | `localtrans.exe session-preflight` |
 | `log-status` | 查询日志状态 | `localtrans.exe log-status` |
 | `mt-runtime-check` | 校验内置 MT 运行时完整性 | `localtrans.exe mt-runtime-check` |
+| `workflow-profiles` | 列出内置工作流预设 | `localtrans.exe workflow-profiles` |
+| `workflow-apply` | 应用工作流预设并同步配置 | `localtrans.exe workflow-apply --profile-id meeting-low-latency` |
+| `loci-runtime-snapshot` | 查看插件治理下的运行时快照 | `localtrans.exe loci-runtime-snapshot` |
+| `loci-governance-snapshot` | 查看插件治理配置快照 | `localtrans.exe loci-governance-snapshot` |
+| `loci-workflow-policy` | 查看当前工作流策略解析结果 | `localtrans.exe loci-workflow-policy` |
 | `tts-voices` | 列出 TTS 音色 | `localtrans.exe tts-voices --language zh` |
 | `tts-config` | 查询 TTS 配置 | `localtrans.exe tts-config` |
 | `tts-default-voice` | 查询默认音色 | `localtrans.exe tts-default-voice --language zh` |
@@ -163,6 +171,10 @@ src-tauri/target/release/localtrans.exe
 | `call` | 通用命令桥 | `localtrans.exe call --name check_mt_runtime --args-json "{}"` |
 
 `session-start --latency-profile` 支持：`low-latency`、`balanced`、`high-accuracy`。
+
+GUI 当前已提供：
+- `就绪` 标签页：用于售卖前和启动前检查
+- `交付` 标签页：用于版本、产物、支持快照和工作流治理态势确认
 
 ## 便携版测试清单
 

@@ -24,6 +24,16 @@ It does the following:
 10. Uploads build artifacts.
 11. Publishes a GitHub Release automatically when the ref is a `v*` tag.
 
+## Submodule requirement
+
+The pinned `submodules/loci-refactor` entry must use a CI-resolvable URL in `.gitmodules`.
+
+Use a canonical HTTPS GitHub URL such as:
+
+- `https://github.com/decade-afk/Loci.git`
+
+Do not leave workstation-only SSH aliases such as `git@work:...` in `.gitmodules`, otherwise GitHub Actions cannot resolve the host and recursive checkout fails before the build even starts.
+
 ## Release artifacts
 
 The workflow uploads:

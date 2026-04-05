@@ -5,9 +5,10 @@ import ReadinessPage from "./pages/ReadinessPage";
 import SettingsPage from "./pages/SettingsPage";
 import ModelPage from "./pages/ModelPage";
 import DiagnosticsPage from "./pages/DiagnosticsPage";
+import ReleasePage from "./pages/ReleasePage";
 import OnboardingModal from "./components/OnboardingModal";
 import TitleBar from "./components/TitleBar";
-import { Mic, CheckCircle2, Settings, Package, Activity, Sparkles } from "lucide-react";
+import { Mic, CheckCircle2, Settings, Package, Activity, Sparkles, Rocket } from "lucide-react";
 import { useRef } from "react";
 
 const tabs = [
@@ -16,6 +17,7 @@ const tabs = [
   { id: "settings" as Tab, label: "设置", icon: Settings },
   { id: "model" as Tab, label: "模型", icon: Package },
   { id: "diagnostics" as Tab, label: "诊断", icon: Activity },
+  { id: "release" as Tab, label: "交付", icon: Rocket },
 ];
 
 function App() {
@@ -43,7 +45,7 @@ function App() {
       {/* Main Content */}
       <div className="flex-1 flex flex-col overflow-hidden">
         {/* Tab Bar */}
-        <div className="flex items-center gap-s px-l py-s bg-white/50 border-b border-bg-tertiary">
+        <div className="flex items-center gap-s px-l py-s bg-white/50 border-b border-bg-tertiary overflow-x-auto">
           {tabs.map((tab) => {
             const Icon = tab.icon;
             const isActive = activeTab === tab.id;
@@ -82,6 +84,7 @@ function App() {
           {activeTab === "settings" && <SettingsPage />}
           {activeTab === "model" && <ModelPage />}
           {activeTab === "diagnostics" && <DiagnosticsPage />}
+          {activeTab === "release" && <ReleasePage />}
         </div>
       </div>
       <OnboardingModal />
