@@ -14,7 +14,8 @@ permissions:
   contents: write
 
 jobs:
-  build-windows:
+  validate-windows:
+    if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/heads/')
     runs-on: windows-latest
     timeout-minutes: 90
 
@@ -80,42 +81,139 @@ jobs:
             Start-Sleep -Seconds 3
           }
 
-      - name: Prepare bundled MT runtime
+      - name: Validate Rust host
+        shell: pwsh
+        run: |
+          cargo check -q --manifest-path src-tauri/Cargo.toml --no-default-features
+          if ($LASTEXITCODE -ne 0) {
+            throw "cargo check without features failed"
+          }
+          cargo check -q --manifest-path src-tauri/Cargo.toml --features loci-backend
+          if ($LASTEXITCODE -ne 0) {
+            throw "cargo check with loci-backend failed"
+          }
+
+      - name: Validate bundled MT runtime presence
         shell: pwsh
         run: |
           $runtimeRoot = Join-Path $env:GITHUB_WORKSPACE "src-tauri\resources\mt-runtime"
           $bundledPython = Join-Path $runtimeRoot "python\python.exe"
           $bundledScript = Join-Path $runtimeRoot "mt_translate.py"
           $argosRoot = Join-Path $runtimeRoot "argos-packages"
-          $argosPackages = @(Get-ChildItem $argosRoot -Directory -ErrorAction SilentlyContinue)
+          Write-Host "MT runtime root: $runtimeRoot"
+          Write-Host "Bundled python: $bundledPython"
+          Write-Host "Bundled script: $bundledScript"
+          Write-Host "Argos root: $argosRoot"
 
-          if ((Test-Path $bundledPython) -and (Test-Path $bundledScript) -and $argosPackages.Count -gt 0) {
-            Write-Host "Using repository-bundled MT runtime from $runtimeRoot"
-          } else {
-            python -m pip install --upgrade pip
-            python -m pip install ctranslate2 sentencepiece numpy pyyaml setuptools argostranslate
-            @'
-            import argostranslate.package
+          if (!(Test-Path $bundledPython)) {
+            throw "Bundled MT python missing: $bundledPython"
+          }
+          if (!(Test-Path $bundledScript)) {
+            throw "Bundled MT script missing: $bundledScript"
+          }
+          if (!(Test-Path $argosRoot)) {
+            throw "Bundled Argos root missing: $argosRoot"
+          }
 
-            argostranslate.package.update_package_index()
-            available = argostranslate.package.get_available_packages()
+          $argosPackageCount = (Get-ChildItem -LiteralPath $argosRoot -Directory | Measure-Object).Count
+          Write-Host "Bundled Argos package directories: $argosPackageCount"
+          if ($argosPackageCount -eq 0) {
+            throw "Bundled Argos packages missing under: $argosRoot"
+          }
 
-            required_pairs = {("zh", "en"), ("en", "zh")}
-            installed = set()
-            for pkg in available:
-                pair = (pkg.from_code, pkg.to_code)
-                if pair in required_pairs and pair not in installed:
-                    path = pkg.download()
-                    argostranslate.package.install_from_path(path)
-                    installed.add(pair)
+  release-windows:
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: windows-latest
+    timeout-minutes: 90
 
-            missing = required_pairs - installed
-            if missing:
-                raise RuntimeError(f"Missing Argos packages: {missing}")
-            print("Installed Argos packages:", sorted(installed))
-            '@ | python -
-            $py = (Get-Command python).Source
-            powershell -ExecutionPolicy Bypass -File .\tools\prepare_mt_runtime.ps1 -SourcePython $py -RepoRoot $env:GITHUB_WORKSPACE
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            src-tauri/target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('src-tauri/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Install LLVM
+        shell: pwsh
+        run: |
+          choco install llvm --no-progress -y
+          $llvmBin = "C:\Program Files\LLVM\bin"
+          if (!(Test-Path (Join-Path $llvmBin "libclang.dll"))) {
+            throw "libclang.dll not found after LLVM installation."
+          }
+          "LIBCLANG_PATH=$llvmBin" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Build frontend
+        shell: pwsh
+        run: |
+          for ($attempt = 1; $attempt -le 3; $attempt++) {
+            npm run build
+            if ($LASTEXITCODE -eq 0) {
+              break
+            }
+
+            if ($attempt -ge 3) {
+              throw "Frontend build failed after 3 attempts."
+            }
+
+            Write-Warning "Frontend build failed on attempt $attempt/3. Retrying..."
+            Start-Sleep -Seconds 3
+          }
+
+      - name: Validate bundled MT runtime presence
+        shell: pwsh
+        run: |
+          $runtimeRoot = Join-Path $env:GITHUB_WORKSPACE "src-tauri\resources\mt-runtime"
+          $bundledPython = Join-Path $runtimeRoot "python\python.exe"
+          $bundledScript = Join-Path $runtimeRoot "mt_translate.py"
+          $argosRoot = Join-Path $runtimeRoot "argos-packages"
+          Write-Host "MT runtime root: $runtimeRoot"
+          Write-Host "Bundled python: $bundledPython"
+          Write-Host "Bundled script: $bundledScript"
+          Write-Host "Argos root: $argosRoot"
+
+          if (!(Test-Path $bundledPython)) {
+            throw "Bundled MT python missing: $bundledPython"
+          }
+          if (!(Test-Path $bundledScript)) {
+            throw "Bundled MT script missing: $bundledScript"
+          }
+          if (!(Test-Path $argosRoot)) {
+            throw "Bundled Argos root missing: $argosRoot"
+          }
+
+          $argosPackageCount = (Get-ChildItem -LiteralPath $argosRoot -Directory | Measure-Object).Count
+          Write-Host "Bundled Argos package directories: $argosPackageCount"
+          if ($argosPackageCount -eq 0) {
+            throw "Bundled Argos packages missing under: $argosRoot"
           }
 
       - name: Build Tauri release
@@ -196,7 +294,6 @@ jobs:
             artifacts/release/SHA256SUMS.txt
 
       - name: Publish GitHub Release
-        if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
           generate_release_notes: true

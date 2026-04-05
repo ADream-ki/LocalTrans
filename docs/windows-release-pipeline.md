@@ -12,18 +12,21 @@ The Windows CI pipeline is defined in:
 
 It does the following:
 
-1. Checks out the repo with recursive submodules so `submodules/loci-refactor` is available.
-2. Installs LLVM on the runner and exports `LIBCLANG_PATH`.
-3. Installs frontend dependencies.
-4. Builds the frontend explicitly with `npm run build`.
-5. Prepares the bundled MT runtime into `src-tauri/resources/mt-runtime`.
-6. Builds the Tauri Windows release with `loci-backend` enabled.
-7. Packages a portable bundle with runtime DLLs and bundled resources.
-8. Runs smoke tests against the built `localtrans.exe`.
-9. Runs smoke tests against the extracted portable bundle.
-10. Generates `SHA256SUMS.txt` for downloadable artifacts.
-11. Uploads build artifacts.
-12. Publishes a GitHub Release automatically when the ref is a `v*` tag.
+1. Runs `validate-windows` on branch pushes, pull requests, and manual dispatches.
+2. Checks out the repo with recursive submodules so `submodules/loci-refactor` is available.
+3. Installs LLVM on the runner and exports `LIBCLANG_PATH`.
+4. Installs frontend dependencies.
+5. Builds the frontend explicitly with `npm run build`.
+6. Runs `cargo check` both with and without `loci-backend` so branch CI catches host/runtime integration regressions without waiting for release packaging.
+7. Verifies the repository-bundled MT runtime in `src-tauri/resources/mt-runtime` by checking `python.exe`, `mt_translate.py`, and Argos package directories explicitly.
+8. Runs `release-windows` only for `v*` tags.
+9. Builds the Tauri Windows release with `loci-backend` enabled.
+10. Packages a portable bundle with runtime DLLs and bundled resources.
+11. Runs smoke tests against the built `localtrans.exe`.
+12. Runs smoke tests against the extracted portable bundle.
+13. Generates `SHA256SUMS.txt` for downloadable artifacts.
+14. Uploads build artifacts.
+15. Publishes a GitHub Release automatically when the ref is a `v*` tag.
 
 ## Submodule requirement
 
