@@ -72,7 +72,9 @@ powershell -ExecutionPolicy Bypass -File .\tools\build-release.ps1
 其中：
 - `docker-build.ps1` 会在容器内运行 `npm ci && npm run build`
 - `docker-build.ps1` 也会在容器内运行 `cargo check -q --no-default-features`
-- `build-release.ps1` 会自动设置仓库内置的 `LIBCLANG_PATH`，然后在主机执行 `npm run tauri build`
+- `build-release.ps1` 会自动设置仓库内置的 `LIBCLANG_PATH`，先执行 `npm run build`，再在主机打一个启用 `loci-backend` 的 NSIS release
+- 如需本机额外产出 MSI，可执行 `build-release.ps1 -Bundles "nsis,msi"`
+- 如果工作站策略偶发拦截 `esbuild` 子进程，可先手工执行 `npm run build`，再用 `build-release.ps1 -SkipFrontendBuild` 继续打包
 
 ## 内置 MT 运行时（用户机器无需 Python）
 
@@ -157,6 +159,7 @@ src-tauri/target/release/localtrans.exe
 | `session-preflight` | 查询启动阻塞项与生效运行时 | `localtrans.exe session-preflight` |
 | `log-status` | 查询日志状态 | `localtrans.exe log-status` |
 | `mt-runtime-check` | 校验内置 MT 运行时完整性 | `localtrans.exe mt-runtime-check` |
+| `support-snapshot` | 导出结构化支持诊断快照 | `localtrans.exe support-snapshot` |
 | `workflow-profiles` | 列出内置工作流预设 | `localtrans.exe workflow-profiles` |
 | `workflow-apply` | 应用工作流预设并同步配置 | `localtrans.exe workflow-apply --profile-id meeting-low-latency` |
 | `loci-runtime-snapshot` | 查看插件治理下的运行时快照 | `localtrans.exe loci-runtime-snapshot` |

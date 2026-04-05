@@ -63,36 +63,63 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
+      - name: Build frontend
+        shell: pwsh
+        run: |
+          for ($attempt = 1; $attempt -le 3; $attempt++) {
+            npm run build
+            if ($LASTEXITCODE -eq 0) {
+              break
+            }
+
+            if ($attempt -ge 3) {
+              throw "Frontend build failed after 3 attempts."
+            }
+
+            Write-Warning "Frontend build failed on attempt $attempt/3. Retrying..."
+            Start-Sleep -Seconds 3
+          }
+
       - name: Prepare bundled MT runtime
         shell: pwsh
         run: |
-          python -m pip install --upgrade pip
-          python -m pip install ctranslate2 sentencepiece numpy pyyaml setuptools argostranslate
-          @'
-          import argostranslate.package
+          $runtimeRoot = Join-Path $env:GITHUB_WORKSPACE "src-tauri\resources\mt-runtime"
+          $bundledPython = Join-Path $runtimeRoot "python\python.exe"
+          $bundledScript = Join-Path $runtimeRoot "mt_translate.py"
+          $argosRoot = Join-Path $runtimeRoot "argos-packages"
+          $argosPackages = @(Get-ChildItem $argosRoot -Directory -ErrorAction SilentlyContinue)
 
-          argostranslate.package.update_package_index()
-          available = argostranslate.package.get_available_packages()
+          if ((Test-Path $bundledPython) -and (Test-Path $bundledScript) -and $argosPackages.Count -gt 0) {
+            Write-Host "Using repository-bundled MT runtime from $runtimeRoot"
+          } else {
+            python -m pip install --upgrade pip
+            python -m pip install ctranslate2 sentencepiece numpy pyyaml setuptools argostranslate
+            @'
+            import argostranslate.package
 
-          required_pairs = {("zh", "en"), ("en", "zh")}
-          installed = set()
-          for pkg in available:
-              pair = (pkg.from_code, pkg.to_code)
-              if pair in required_pairs and pair not in installed:
-                  path = pkg.download()
-                  argostranslate.package.install_from_path(path)
-                  installed.add(pair)
+            argostranslate.package.update_package_index()
+            available = argostranslate.package.get_available_packages()
 
-          missing = required_pairs - installed
-          if missing:
-              raise RuntimeError(f"Missing Argos packages: {missing}")
-          print("Installed Argos packages:", sorted(installed))
-          '@ | python -
-          $py = (Get-Command python).Source
-          powershell -ExecutionPolicy Bypass -File .\tools\prepare_mt_runtime.ps1 -SourcePython $py -RepoRoot $env:GITHUB_WORKSPACE
+            required_pairs = {("zh", "en"), ("en", "zh")}
+            installed = set()
+            for pkg in available:
+                pair = (pkg.from_code, pkg.to_code)
+                if pair in required_pairs and pair not in installed:
+                    path = pkg.download()
+                    argostranslate.package.install_from_path(path)
+                    installed.add(pair)
+
+            missing = required_pairs - installed
+            if missing:
+                raise RuntimeError(f"Missing Argos packages: {missing}")
+            print("Installed Argos packages:", sorted(installed))
+            '@ | python -
+            $py = (Get-Command python).Source
+            powershell -ExecutionPolicy Bypass -File .\tools\prepare_mt_runtime.ps1 -SourcePython $py -RepoRoot $env:GITHUB_WORKSPACE
+          }
 
       - name: Build Tauri release
-        run: npm run tauri build
+        run: npm run tauri build -- --features loci-backend --config src-tauri/tauri.release.conf.json
 
       - name: Smoke test release CLI
         shell: pwsh
@@ -108,6 +135,17 @@ jobs:
           & $exe workflow-apply --profile-id meeting-low-latency | Out-Host
           if ($LASTEXITCODE -ne 0) {
             throw "workflow-apply smoke test failed"
+          }
+          & $exe config-set --key translationEngine --value nllb | Out-Host
+          if ($LASTEXITCODE -ne 0) {
+            throw "config-set smoke test failed"
+          }
+          $policy = & $exe loci-governance-snapshot | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0) {
+            throw "loci-governance-snapshot smoke test failed"
+          }
+          if ($policy.statusMessage -like "*feature is not enabled*") {
+            throw "release build is missing loci-backend"
           }
 
       - name: Package portable bundle

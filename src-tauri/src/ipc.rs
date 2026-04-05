@@ -90,6 +90,7 @@ pub enum IpcCommand {
     },
     LogStatus,
     MtRuntimeCheck,
+    SupportSnapshot,
     WorkflowProfiles,
     WorkflowApply {
         profile_id: String,
@@ -369,6 +370,7 @@ fn execute(command: IpcCommand, app: AppHandle) -> AppResult<Value> {
         )),
         IpcCommand::LogStatus => to_json(commands::system::get_log_status()),
         IpcCommand::MtRuntimeCheck => to_json(commands::system::check_mt_runtime()),
+        IpcCommand::SupportSnapshot => to_json(commands::system::get_support_snapshot()),
         IpcCommand::WorkflowProfiles => to_json(commands::system::list_workflow_profiles()),
         IpcCommand::WorkflowApply { profile_id } => {
             to_json(commands::system::apply_workflow_profile(

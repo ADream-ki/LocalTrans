@@ -126,6 +126,7 @@ pub enum Commands {
     },
     LogStatus,
     MtRuntimeCheck,
+    SupportSnapshot,
     WorkflowProfiles,
     WorkflowApply {
         #[arg(long)]

@@ -108,6 +108,14 @@ interface LogStatus {
   exists: boolean;
 }
 
+interface SupportSnapshot {
+  capturedAtUtc: string;
+  version: VersionOutput;
+  runtime: RuntimeStatus;
+  preflight: SessionPreflightStatus;
+  logStatus: LogStatus;
+}
+
 function ReleasePage() {
   const { setActiveTab, openModelOnboarding } = useUiStore();
   const [version, setVersion] = useState<VersionOutput | null>(null);
@@ -123,19 +131,16 @@ function ReleasePage() {
   const refresh = useCallback(async () => {
     setError(null);
     try {
-      const [nextVersion, nextRuntime, nextPreflight, nextProfiles, nextLogStatus] =
+      const [snapshot, nextProfiles] =
         await Promise.all([
-          invoke<VersionOutput>("version"),
-          invoke<RuntimeStatus>("get_runtime_status"),
-          invoke<SessionPreflightStatus>("get_session_preflight"),
+          invoke<SupportSnapshot>("get_support_snapshot"),
           invoke<WorkflowProfileDescriptor[]>("list_workflow_profiles").catch(() => []),
-          invoke<LogStatus>("get_log_status"),
         ]);
-      setVersion(nextVersion);
-      setRuntime(nextRuntime);
-      setPreflight(nextPreflight);
+      setVersion(snapshot.version);
+      setRuntime(snapshot.runtime);
+      setPreflight(snapshot.preflight);
       setProfiles(nextProfiles);
-      setLogStatus(nextLogStatus);
+      setLogStatus(snapshot.logStatus);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {

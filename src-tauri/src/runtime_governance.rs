@@ -128,14 +128,35 @@ pub fn workflow_policy_snapshot(
             });
         };
 
-        let inventory = crate::loci_runtime::current_workflow_inventory(&model_path)
+        let inventory = match crate::loci_runtime::current_workflow_inventory(&model_path)
             .with_context(|| {
                 format!(
                     "failed to resolve Loci workflow inventory ({})",
                     model_path.display()
                 )
-            })
-            .map_err(|e| crate::error::AppError::InvalidState(e.to_string()))?;
+            }) {
+            Ok(inventory) => inventory,
+            Err(error) => {
+                return Ok(LociWorkflowPolicySnapshot {
+                    translation_engine,
+                    governance_enabled: true,
+                    runtime_ready: false,
+                    policy_active: false,
+                    active_workflow_rewriter: None,
+                    workflows: Vec::new(),
+                    effective_asr_engine: None,
+                    effective_tts_engine: None,
+                    effective_tts_enabled: None,
+                    preferred_latency_profile: None,
+                    force_bidirectional: None,
+                    force_tts_auto_play: None,
+                    supports_streaming: false,
+                    supports_voice_cloning: false,
+                    unresolved_workflows: Vec::new(),
+                    status_message: error.to_string(),
+                });
+            }
+        };
 
         let mut snapshot = LociWorkflowPolicySnapshot {
             translation_engine,

@@ -82,6 +82,18 @@ pub struct MtRuntimeCheck {
     pub message: String,
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SupportSnapshot {
+    pub captured_at_utc: String,
+    pub version: crate::commands::version::VersionOutput,
+    pub runtime: RuntimeStatus,
+    pub preflight: SessionPreflightStatus,
+    pub log_status: LogStatus,
+    pub mt_runtime: MtRuntimeCheck,
+    pub loci_governance: crate::commands::loci_runtime::LociGovernanceSnapshot,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkflowProfileDescriptor {
@@ -285,7 +297,17 @@ fn build_preflight(
                 action: Some("download_loci_model".to_string()),
             });
         }
-        if !selection.workflow_policy.policy_active {
+        if loci_ready && !selection.workflow_policy.runtime_ready {
+            blockers.push(SessionPreflightItem {
+                code: "translation.loci_runtime_unavailable".to_string(),
+                stage: "translation".to_string(),
+                severity: "blocker".to_string(),
+                label: "Loci 运行时不可用".to_string(),
+                message: selection.workflow_policy.status_message.clone(),
+                action: Some("open_diagnostics_page".to_string()),
+            });
+        }
+        if selection.workflow_policy.runtime_ready && !selection.workflow_policy.policy_active {
             warnings.push(SessionPreflightItem {
                 code: "workflow.inactive".to_string(),
                 stage: "workflow".to_string(),
@@ -296,7 +318,9 @@ fn build_preflight(
                 action: Some("open_settings_page".to_string()),
             });
         }
-        if !selection.workflow_policy.unresolved_workflows.is_empty() {
+        if selection.workflow_policy.runtime_ready
+            && !selection.workflow_policy.unresolved_workflows.is_empty()
+        {
             warnings.push(SessionPreflightItem {
                 code: "workflow.unresolved".to_string(),
                 stage: "workflow".to_string(),
@@ -433,18 +457,23 @@ pub fn get_runtime_status() -> AppResult<RuntimeStatus> {
 
     let (translation_ready, translation_path, translation_message, translation_action) =
         if translation_engine == "loci" {
+            let loci_runtime_ready = loci_ready && selection.workflow_policy.runtime_ready;
             (
-                loci_ready,
+                loci_runtime_ready,
                 models_dir.join("loci").display().to_string(),
-                if loci_ready {
+                if loci_runtime_ready {
                     "Loci enhanced translation ready".to_string()
-                } else {
+                } else if !loci_ready {
                     "Loci translation model not installed".to_string()
-                },
-                if loci_ready {
-                    None
                 } else {
+                    selection.workflow_policy.status_message.clone()
+                },
+                if loci_runtime_ready {
+                    None
+                } else if !loci_ready {
                     Some("download_loci_model".to_string())
+                } else {
+                    Some("open_diagnostics_page".to_string())
                 },
             )
         } else {
@@ -675,6 +704,19 @@ pub fn check_mt_runtime() -> AppResult<MtRuntimeCheck> {
         language_pairs,
         ready,
         message,
+    })
+}
+
+#[tauri::command]
+pub fn get_support_snapshot() -> AppResult<SupportSnapshot> {
+    Ok(SupportSnapshot {
+        captured_at_utc: chrono::Utc::now().to_rfc3339(),
+        version: crate::commands::version::version()?,
+        runtime: get_runtime_status()?,
+        preflight: get_session_preflight()?,
+        log_status: get_log_status()?,
+        mt_runtime: check_mt_runtime()?,
+        loci_governance: crate::commands::loci_runtime::get_loci_governance_snapshot(None)?,
     })
 }
 

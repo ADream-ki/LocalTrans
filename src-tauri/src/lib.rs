@@ -50,6 +50,7 @@ pub fn run() -> Result<(), tauri::Error> {
             commands::system::get_runtime_adapter_inventory,
             commands::system::get_log_status,
             commands::system::check_mt_runtime,
+            commands::system::get_support_snapshot,
             commands::system::list_workflow_profiles,
             commands::system::apply_workflow_profile,
             commands::system::open_url,

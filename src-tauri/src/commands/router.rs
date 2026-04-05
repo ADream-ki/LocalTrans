@@ -253,6 +253,10 @@ pub fn execute_named(name: &str, args: Value, app: Option<AppHandle>) -> AppResu
             .map_err(|e| AppError::Io(e.to_string()))?),
         "check_mt_runtime" => Ok(serde_json::to_value(super::system::check_mt_runtime()?)
             .map_err(|e| AppError::Io(e.to_string()))?),
+        "get_support_snapshot" => Ok(
+            serde_json::to_value(super::system::get_support_snapshot()?)
+                .map_err(|e| AppError::Io(e.to_string()))?,
+        ),
         "list_workflow_profiles" => Ok(serde_json::to_value(
             super::system::list_workflow_profiles()?,
         )

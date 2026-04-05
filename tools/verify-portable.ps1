@@ -37,6 +37,19 @@ try {
   if ($LASTEXITCODE -ne 0) {
     throw "portable workflow-apply check failed"
   }
+
+  & $exePath config-set --key translationEngine --value nllb | Out-Host
+  if ($LASTEXITCODE -ne 0) {
+    throw "portable config-set check failed"
+  }
+
+  $policy = & $exePath loci-governance-snapshot | ConvertFrom-Json
+  if ($LASTEXITCODE -ne 0) {
+    throw "portable loci-governance-snapshot check failed"
+  }
+  if ($policy.statusMessage -like "*feature is not enabled*") {
+    throw "portable package is missing loci-backend"
+  }
 } finally {
   Pop-Location
 }

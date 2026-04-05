@@ -72,7 +72,9 @@ powershell -ExecutionPolicy Bypass -File .\tools\build-release.ps1
 What the scripts do:
 - `docker-build.ps1` runs `npm ci && npm run build` inside Docker
 - `docker-build.ps1` runs `cargo check -q --no-default-features` inside Docker
-- `build-release.ps1` sets `LIBCLANG_PATH` to the bundled LLVM and then runs `npm run tauri build` on the host
+- `build-release.ps1` sets `LIBCLANG_PATH` to the bundled LLVM, runs `npm run build`, then bundles a `loci-backend` enabled NSIS release on the host
+- `build-release.ps1 -Bundles "nsis,msi"` can be used when you also want a local MSI build
+- `build-release.ps1 -SkipFrontendBuild` can be used after a manual `npm run build` if workstation policy interferes with `esbuild` child process creation
 
 ## Bundled MT Runtime (No user Python required)
 
@@ -157,6 +159,7 @@ src-tauri/target/release/localtrans.exe
 | `session-preflight` | Query launch blockers and effective runtime | `localtrans.exe session-preflight` |
 | `log-status` | Query log status | `localtrans.exe log-status` |
 | `mt-runtime-check` | Verify bundled MT runtime integrity | `localtrans.exe mt-runtime-check` |
+| `support-snapshot` | Export structured support diagnostics snapshot | `localtrans.exe support-snapshot` |
 | `workflow-profiles` | List built-in sellable workflow profiles | `localtrans.exe workflow-profiles` |
 | `workflow-apply` | Apply a workflow profile and sync config | `localtrans.exe workflow-apply --profile-id meeting-low-latency` |
 | `loci-runtime-snapshot` | Inspect plugin-governed runtime snapshot | `localtrans.exe loci-runtime-snapshot` |

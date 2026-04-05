@@ -292,10 +292,38 @@ pub fn get_loci_governance_snapshot(
         };
 
         let active_rewriter_inventory =
-            crate::loci_runtime::current_rewriter_inventory(&model_path)
-                .map_err(|e| AppError::InvalidState(e.to_string()))?;
-        let plugin_dirs = crate::loci_runtime::current_plugin_dirs(&model_path)
-            .map_err(|e| AppError::InvalidState(e.to_string()))?;
+            match crate::loci_runtime::current_rewriter_inventory(&model_path) {
+                Ok(inventory) => inventory,
+                Err(error) => {
+                    return Ok(LociGovernanceSnapshot {
+                        translation_engine,
+                        loci_selected,
+                        runtime_ready: false,
+                        status_message: error.to_string(),
+                        default_model_dir,
+                        model_path: Some(model_path.display().to_string()),
+                        plugin_dirs: configured_plugin_dirs,
+                        configured_rewriter_targets,
+                        active_rewriter_inventory: Vec::new(),
+                    });
+                }
+            };
+        let plugin_dirs = match crate::loci_runtime::current_plugin_dirs(&model_path) {
+            Ok(plugin_dirs) => plugin_dirs,
+            Err(error) => {
+                return Ok(LociGovernanceSnapshot {
+                    translation_engine,
+                    loci_selected,
+                    runtime_ready: false,
+                    status_message: error.to_string(),
+                    default_model_dir,
+                    model_path: Some(model_path.display().to_string()),
+                    plugin_dirs: configured_plugin_dirs,
+                    configured_rewriter_targets,
+                    active_rewriter_inventory,
+                });
+            }
+        };
 
         return Ok(LociGovernanceSnapshot {
             translation_engine,
